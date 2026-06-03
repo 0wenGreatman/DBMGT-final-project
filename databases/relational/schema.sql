@@ -32,6 +32,46 @@
 
 
 -- ============================================================
+--  STATION AND ROUTE DATA
+-- ============================================================
+
+-- Two supported transit networks:
+-- M = metro, N = national rail.
+CREATE TABLE IF NOT EXISTS networks (
+    network_id           CHAR(1)      PRIMARY KEY,
+    network_display_name VARCHAR(100) NOT NULL,
+
+    CHECK (network_id IN ('M', 'N'))
+);
+
+-- One row per physical station in either network.
+CREATE TABLE IF NOT EXISTS stations (
+    station_id   VARCHAR(10)  PRIMARY KEY,
+    network_id   CHAR(1)      NOT NULL REFERENCES networks(network_id),
+    station_name VARCHAR(100) NOT NULL,
+    is_active    BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+-- One row per route/line, such as M1 or NR1.
+CREATE TABLE IF NOT EXISTS lines (
+    line_id    VARCHAR(10)  PRIMARY KEY,
+    network_id CHAR(1)      NOT NULL REFERENCES networks(network_id),
+    line_name  VARCHAR(100) NOT NULL,
+    is_active  BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+-- Actual station-line memberships.
+-- Do not derive this by joining stations and lines on network_id only.
+CREATE TABLE IF NOT EXISTS station_lines (
+    station_id VARCHAR(10) NOT NULL REFERENCES stations(station_id),
+    line_id    VARCHAR(10) NOT NULL REFERENCES lines(line_id),
+
+    PRIMARY KEY (station_id, line_id)
+);
+
+
+
+-- ============================================================
 --  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
 -- ============================================================
 
