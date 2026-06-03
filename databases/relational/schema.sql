@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS fare_classes (
 
 -- Pricing rules. Monetary values are stored as USD cents, not floats. To avoid floating point precision issues.
 
+
 CREATE TABLE IF NOT EXISTS fare_rules (
     fare_rule_id VARCHAR(30) PRIMARY KEY,
 
@@ -356,6 +357,107 @@ CONSTRAINT uq_fare_rules_unique
             fare_class_id,
             effective_from
         )
+);
+
+-- ============================================================
+--  SEAT DATA
+-- ============================================================
+
+-- Seat layout assigned to a national rail schedule.
+CREATE TABLE IF NOT EXISTS seat_layouts (
+    layout_id VARCHAR(20) PRIMARY KEY,
+    schedule_id VARCHAR(20) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id),
+    UNIQUE (schedule_id)
+);
+
+-- Coaches inside one seat layout, such as coach A or B.
+CREATE TABLE IF NOT EXISTS coaches (
+    coach_id VARCHAR(30) PRIMARY KEY, --seeded as layout_id + coach_code for simplicity
+    layout_id VARCHAR(20) NOT NULL,
+    coach_code VARCHAR(10) NOT NULL,
+    fare_class_id VARCHAR(20) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (layout_id) REFERENCES seat_layouts (layout_id) ON DELETE CASCADE,
+    FOREIGN KEY (fare_class_id) REFERENCES fare_classes (fare_class_id),
+    UNIQUE (layout_id, coach_code)
+);
+
+-- Physical seats inside a coach. seat_code is only unique within a coach.
+
+CREATE TABLE IF NOT EXISTS seats (
+    seat_pk VARCHAR(40) PRIMARY KEY, --seeded as coach_id + seat_code for simplicity
+
+    coach_id VARCHAR(30) NOT NULL,
+
+    seat_code VARCHAR(10) NOT NULL, -- e.g. "1A", "2B". Not globally unique, only unique within a coach.
+    seat_row INTEGER,
+    seat_column VARCHAR(5),
+
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (coach_id)
+        REFERENCES coaches(coach_id)
+        ON DELETE CASCADE,
+
+    UNIQUE (coach_id, seat_code), -- Ensures no duplicate seat codes within the same coach.
+
+CHECK ( seat_row IS NULL OR seat_row > 0 ) );
+
+-- Seat reservations for a concrete departure and travel segment.
+
+CREATE TABLE IF NOT EXISTS seat_reservations (
+    seat_reservation_id VARCHAR(30) PRIMARY KEY,
+
+    departure_id VARCHAR(30) NOT NULL,
+    seat_pk VARCHAR(40) NOT NULL,
+    booking_id VARCHAR(30) NOT NULL,
+
+    origin_station_id VARCHAR(10) NOT NULL,
+    destination_station_id VARCHAR(10) NOT NULL,
+
+    origin_stop_sequence INTEGER NOT NULL,
+    destination_stop_sequence INTEGER NOT NULL,
+
+    reservation_status VARCHAR(20) NOT NULL,
+
+    held_until TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (departure_id)
+        REFERENCES service_departures(departure_id),
+
+    FOREIGN KEY (seat_pk)
+        REFERENCES seats(seat_pk),
+
+-- Future FK after national_rail_booking is created:
+-- FOREIGN KEY (booking_id)
+--     REFERENCES national_rail_booking(booking_id),
+
+FOREIGN KEY (origin_station_id)
+        REFERENCES stations(station_id),
+
+    FOREIGN KEY (destination_station_id)
+        REFERENCES stations(station_id),
+
+    CHECK (reservation_status IN (
+        'held',
+        'confirmed',
+        'cancelled',
+        'expired',
+        'completed'
+    )),
+    CHECK (origin_stop_sequence < destination_stop_sequence)
 );
 
 -- ============================================================
