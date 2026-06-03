@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS schedule_services (
     schedule_id            VARCHAR(20) PRIMARY KEY,
     line_id                VARCHAR(10) NOT NULL,
 
-    service_type           VARCHAR(30) NOT NULL,
+    service_type           VARCHAR(30) NOT NULL, -- e.g. 'normal', 'express', 'metro'
     direction              VARCHAR(30) NOT NULL,
 
     origin_station_id      VARCHAR(10) NOT NULL,
@@ -199,6 +199,163 @@ CREATE TABLE IF NOT EXISTS service_departures (
             'cancelled'
         )
     )
+);
+
+-- ============================================================
+--  FARE DATA
+-- ============================================================
+
+-- Ticket type master data, such as single, return, and day_pass.
+CREATE TABLE IF NOT EXISTS ticket_types (
+    ticket_type_id VARCHAR(20) PRIMARY KEY,
+    display_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Defines which networks each ticket type can be used on.
+-- M = metro, N = national rail.
+CREATE TABLE IF NOT EXISTS ticket_type_networks (
+    ticket_type_id VARCHAR(20) NOT NULL,
+    network_id CHAR(1) NOT NULL,
+    seat_assignment BOOLEAN NOT NULL DEFAULT FALSE,
+    advance_purchase BOOLEAN NOT NULL DEFAULT FALSE,
+    advance_purchase_max_days INTEGER,
+    changes_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+    change_fee_cents INTEGER,
+    refundable BOOLEAN NOT NULL DEFAULT FALSE,
+    notes TEXT,
+    PRIMARY KEY (ticket_type_id, network_id),
+    FOREIGN KEY (ticket_type_id) REFERENCES ticket_types (ticket_type_id) ON DELETE CASCADE,
+    FOREIGN KEY (network_id) REFERENCES networks (network_id),
+    CHECK (network_id IN ('M', 'N')),
+    CHECK (
+        advance_purchase_max_days IS NULL
+        OR advance_purchase_max_days >= 0
+    ),
+    CHECK (
+        change_fee_cents IS NULL
+        OR change_fee_cents >= 0
+    )
+);
+
+-- Fare or seat classes, such as general, standard, and first.
+CREATE TABLE IF NOT EXISTS fare_classes (
+    fare_class_id VARCHAR(20) PRIMARY KEY,
+    network_id CHAR(1) NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    FOREIGN KEY (network_id) REFERENCES networks (network_id),
+    UNIQUE (fare_class_id, network_id),
+    CHECK (network_id IN ('M', 'N'))
+);
+
+-- Pricing rules. Monetary values are stored as USD cents, not floats. To avoid floating point precision issues.
+
+CREATE TABLE IF NOT EXISTS fare_rules (
+    fare_rule_id VARCHAR(30) PRIMARY KEY,
+
+    network_id CHAR(1) NOT NULL,
+    schedule_id VARCHAR(20),
+    ticket_type_id VARCHAR(20) NOT NULL,
+    fare_class_id VARCHAR(20),
+
+-- Pricing model decides which fare amount columns must be filled.
+-- stops_based: schedule fare without fare class, e.g. metro single.
+-- stops_based_with_fare_class: schedule fare varies by class.
+-- stops_based_per_leg: return ticket prices each leg separately.
+-- flat_rate: fixed fare not tied to a schedule.
+pricing_model VARCHAR(40) NOT NULL,
+
+-- use "USD cents" to store monetary values, e.g. 250 means $2.50 USD
+base_fare_cents INTEGER,
+per_stop_rate_cents INTEGER,
+flat_fare_cents INTEGER,
+currency CHAR(3) NOT NULL DEFAULT 'USD',
+effective_from DATE NOT NULL DEFAULT CURRENT_DATE, --Additional column to track when a fare rule becomes effective.
+effective_to DATE, --Optional column to track when a fare rule is no longer effective. Null means it is currently active.
+is_active BOOLEAN NOT NULL DEFAULT TRUE,
+created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY (network_id) REFERENCES networks (network_id),
+FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id),
+FOREIGN KEY (ticket_type_id) REFERENCES ticket_types (ticket_type_id),
+
+-- Ensures the ticket type is actually available on this network.
+FOREIGN KEY (ticket_type_id, network_id) REFERENCES ticket_type_networks (ticket_type_id, network_id),
+
+-- Ensures the fare class belongs to the same network when present.
+FOREIGN KEY (fare_class_id, network_id) REFERENCES fare_classes (fare_class_id, network_id),
+CHECK (network_id IN ('M', 'N')),
+CHECK (
+    pricing_model IN (
+        'stops_based',
+        'stops_based_with_fare_class',
+        'stops_based_per_leg',
+        'flat_rate'
+    )
+),
+CHECK (currency = 'USD'),
+CHECK (
+    base_fare_cents IS NULL
+    OR base_fare_cents >= 0
+),
+CHECK (
+    per_stop_rate_cents IS NULL
+    OR per_stop_rate_cents >= 0
+),
+CHECK (
+    flat_fare_cents IS NULL
+    OR flat_fare_cents >= 0
+),
+CHECK (
+    effective_to IS NULL
+    OR effective_to >= effective_from
+),
+CHECK (
+    -- flat_rate uses only flat_fare_cents, e.g. metro day pass.
+    (
+        pricing_model = 'flat_rate'
+        AND schedule_id IS NULL
+        AND fare_class_id IS NULL
+        AND flat_fare_cents IS NOT NULL
+        AND base_fare_cents IS NULL
+        AND per_stop_rate_cents IS NULL
+    )
+    -- stops_based uses base + per-stop rate for one schedule.
+    OR (
+        pricing_model = 'stops_based'
+        AND schedule_id IS NOT NULL
+        AND fare_class_id IS NULL
+        AND base_fare_cents IS NOT NULL
+        AND per_stop_rate_cents IS NOT NULL
+        AND flat_fare_cents IS NULL
+    )
+    -- Class-based models use base + per-stop rate for one schedule and class.
+    OR (
+        pricing_model IN (
+            'stops_based_with_fare_class',
+            'stops_based_per_leg'
+        )
+        AND schedule_id IS NOT NULL
+        AND fare_class_id IS NOT NULL
+        AND base_fare_cents IS NOT NULL
+        AND per_stop_rate_cents IS NOT NULL
+        AND flat_fare_cents IS NULL
+    )
+),
+
+-- Ensures no duplicate fare rules for the same combination of network, schedule, ticket type, fare class, and effective date.
+CONSTRAINT uq_fare_rules_unique
+        UNIQUE NULLS NOT DISTINCT (
+            network_id,
+            schedule_id,
+            ticket_type_id,
+            fare_class_id,
+            effective_from
+        )
 );
 
 -- ============================================================
