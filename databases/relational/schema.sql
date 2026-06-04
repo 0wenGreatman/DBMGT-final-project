@@ -28,7 +28,21 @@
 --    docker-compose down -v && docker-compose up -d
 -- ============================================================
 
-
+-- Table: user_profiles
+-- Function: Stores the primary contact information and lifecycle state for users.
+-- Input: User's personal details provided during registration.
+-- Output: Structured user profile data, filtered to exclude soft-deleted records for AI and business queries.
+CREATE TABLE user_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Serves as the surrogate primary key for underlying database relations.
+    user_id VARCHAR(50) UNIQUE NOT NULL,            -- Acts as the business identifier for frontend display and external services (e.g., RU01).
+    full_name VARCHAR(100) NOT NULL,                -- Stores the user's full legal name.
+    email VARCHAR(255) UNIQUE NOT NULL,             -- Stores the email address used for contact and potential login identification.
+    phone VARCHAR(50) NOT NULL,                     -- Stores the contact phone number.
+    date_of_birth DATE NOT NULL,                    -- Records the user's date of birth for age verification.
+    registered_at TIMESTAMP NOT NULL,               -- Records the exact time the account was created.
+    is_active BOOLEAN DEFAULT TRUE,                 -- Indicates whether the account is active and permitted to access the system.
+    deleted_at TIMESTAMP DEFAULT NULL               -- Acts as a soft-deletion marker to maintain referential integrity.
+);
 
 
 -- ============================================================
