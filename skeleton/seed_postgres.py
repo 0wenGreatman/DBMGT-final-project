@@ -145,9 +145,19 @@ def seed_users(cur):
         ["user_profile_id", "password_hash", "hash_algorithm", "security_question_id", "secret_answer_hash", "password_updated_at"],
         cred_rows)
         
-    insert_many(cur, "login_logs",
-        ["user_profile_id", "login_at", "status"],
-        log_rows)
+if log_rows:
+    sql = (
+        "INSERT INTO login_logs (user_profile_id, login_at, status) "
+        "SELECT v.user_profile_id, v.login_at, v.status "
+        "FROM (VALUES %s) AS v(user_profile_id, login_at, status) "
+        "WHERE NOT EXISTS ("
+        "  SELECT 1 FROM login_logs l "
+        "  WHERE l.user_profile_id = v.user_profile_id "
+        "    AND l.login_at = v.login_at "
+        "    AND l.status = v.status"
+        ")"
+    )
+    execute_values(cur, sql, log_rows)
 
 
 def seed_national_rail_bookings(cur):
