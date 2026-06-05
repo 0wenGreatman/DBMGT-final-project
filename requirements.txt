@@ -14,3 +14,6 @@ gradio>=4.36.0
 
 # Utilities
 python-dotenv>=1.0.0         # Load .env file
+
+# Password hashing
+argon2-cffi>=21.3.0
