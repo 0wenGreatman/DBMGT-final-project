@@ -28,6 +28,8 @@
 --    docker-compose down -v && docker-compose up -d
 -- ============================================================
 
+-- Ensure UUID generation functions are available in older PostgreSQL versions
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Table: user_profiles
 -- Stores the primary contact information and lifecycle state for users.
