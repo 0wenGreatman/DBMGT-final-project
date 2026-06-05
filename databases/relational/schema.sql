@@ -31,33 +31,11 @@
 
 
 
--- ============================================================
---  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
--- ============================================================
-
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS policy_documents (
-    id          SERIAL       PRIMARY KEY,
-    title       VARCHAR(200) NOT NULL,
-    category    VARCHAR(50)  NOT NULL,  -- 'refund', 'booking', 'conduct'
-    content     TEXT         NOT NULL,
-    -- 768-dim  → Ollama nomic-embed-text (default)
-    -- 3072-dim → Gemini gemini-embedding-001
-    -- If you switch LLM_PROVIDER to gemini, change to vector(3072) and reset the database.
-    embedding   vector(768),
-    source_file VARCHAR(200),
-    created_at  TIMESTAMPTZ  DEFAULT NOW()
-);
-
--- Index for fast cosine similarity search
-CREATE INDEX IF NOT EXISTS ON policy_documents USING hnsw (embedding vector_cosine_ops);
-
-
 -- ========================================
--- 購票 / 乘車紀錄 (Booking / Travel History)
+-- Booking / Travel History
 -- ========================================
 
+-- Bookings and travel history for National Rail. 
 CREATE TABLE national_rail_booking (
     booking_id VARCHAR(20) PRIMARY KEY,
     user_id VARCHAR(20) NOT NULL,
@@ -72,7 +50,7 @@ CREATE TABLE national_rail_booking (
     travelled_at TIMESTAMPTZ,
     
     FOREIGN KEY (user_id)
-        REFERENCES users_profile(user_id),
+        REFERENCES user_profile(user_id),
     FOREIGN KEY (origin_station_id)
         REFERENCES stations(station_id),
     FOREIGN KEY (destination_station_id)
@@ -88,7 +66,7 @@ CREATE TABLE national_rail_booking (
     CHECK (travelled_at IS NULL OR status = 'completed')
 );
 
-
+-- Bookings and travel history for Metro.
 CREATE TABLE metro_booking (
     trip_id VARCHAR(20) PRIMARY KEY,  trip_id VARCHAR(20) PRIMARY KEY,  -- if this is the initial day pass purchase, it can be referenced by subsequent trips
     user_id VARCHAR(20) NOT NULL,
@@ -105,7 +83,7 @@ CREATE TABLE metro_booking (
     travelled_at TIMESTAMPTZ,
     
     FOREIGN KEY (user_id)
-        REFERENCES users_profile(user_id),
+        REFERENCES user_profile(user_id),
     FOREIGN KEY (schedule_id)
         REFERENCES schedule_services(schedule_id),
     FOREIGN KEY (origin_station_id)
@@ -127,9 +105,10 @@ CREATE TABLE metro_booking (
 
 
 -- ========================================
--- 付款 (Payment)
+-- Payments
 -- ========================================
 
+-- Payment records for both National Rail and Metro.
 CREATE TABLE payment_record (
     payment_id VARCHAR(20) PRIMARY KEY,
     amount_usd DECIMAL(10, 2) NOT NULL,
@@ -142,6 +121,7 @@ CREATE TABLE payment_record (
     CHECK (method IN ('credit_card', 'debit_card', 'ewallet'))
 );
 
+-- Linking payments to the bookings/trips for National Rail.
 CREATE TABLE national_rail_payment_record (
     payment_id VARCHAR(20) PRIMARY KEY,
     booking_id VARCHAR(20) NOT NULL,
@@ -152,6 +132,7 @@ CREATE TABLE national_rail_payment_record (
         REFERENCES national_rail_booking(booking_id)
 );
 
+-- Linking payments to the bookings/trips for Metro. Note that for Metro, multiple trips (day pass + subsequent trips) can reference the same payment record if they are linked by the day_pass_ref.
 CREATE TABLE metro_payment_record (
     payment_id VARCHAR(20) PRIMARY KEY,
     trip_id VARCHAR(20) NOT NULL,
@@ -164,9 +145,10 @@ CREATE TABLE metro_payment_record (
 
 
 -- ========================================
--- 回饋 (Feedback)
+-- Feedback
 -- ========================================
 
+-- Feedback records for both National Rail and Metro.
 CREATE TABLE feedback_base (
     feedback_id VARCHAR(20) PRIMARY KEY,
     user_id VARCHAR(20) NOT NULL,
@@ -175,13 +157,13 @@ CREATE TABLE feedback_base (
     submitted_at TIMESTAMPTZ NOT NULL,
     
     FOREIGN KEY (user_id)
-        REFERENCES users_profile(user_id),
+        REFERENCES user_profile(user_id),
         
     CHECK (rating >= 1 AND rating <= 5),
     CHECK (comment IS NULL OR LENGTH(comment) > 0)
 );
 
-
+-- Linking feedback to the bookings/trips for National Rail.
 CREATE TABLE national_rail_feedback (
     feedback_id VARCHAR(20) PRIMARY KEY,
     booking_id VARCHAR(20) NOT NULL,
@@ -192,6 +174,7 @@ CREATE TABLE national_rail_feedback (
         REFERENCES national_rail_booking(booking_id)
 );
 
+-- Linking feedback to the bookings/trips for Metro.
 CREATE TABLE metro_feedback (
     feedback_id VARCHAR(20) PRIMARY KEY,
     trip_id VARCHAR(20) NOT NULL,
