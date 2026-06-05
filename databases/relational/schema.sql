@@ -579,7 +579,7 @@ CREATE TABLE national_rail_booking (
 
 -- Bookings and travel history for Metro.
 CREATE TABLE metro_booking (
-    trip_id VARCHAR(20) PRIMARY KEY,  trip_id VARCHAR(20) PRIMARY KEY,  -- if this is the initial day pass purchase, it can be referenced by subsequent trips
+    trip_id VARCHAR(20) PRIMARY KEY,  -- if this is the initial day pass purchase, it can be referenced by subsequent trips
     user_id VARCHAR(20) NOT NULL,
     schedule_id VARCHAR(20) NOT NULL,
     origin_station_id VARCHAR(10) NOT NULL,
