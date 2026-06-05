@@ -54,6 +54,31 @@ CREATE TABLE security_questions (
     is_active BOOLEAN DEFAULT TRUE                  -- Indicates whether this question is currently available for new users to select during registration.
 );
 
+-- Table: user_credentials
+-- Function: Secures authentication keys, algorithms, and security questions. Restricted to Auth services.
+-- Input: Argon2 hashed passwords, foreign key to the security question, and hashed answers.
+-- Output: Hashes and algorithms used to validate login attempts or password reset requests.
+CREATE TABLE user_credentials (
+    user_profile_id UUID PRIMARY KEY,               -- Foreign key linking strictly one-to-one with user_profiles.
+    password_hash VARCHAR(255) NOT NULL,            -- Stores the securely hashed password string including its salt.
+    hash_algorithm VARCHAR(20) DEFAULT 'Argon2id',  -- Identifies the algorithm used for the hash to allow future smooth migrations.
+    security_question_id INT NOT NULL,              -- Foreign key referencing the standard security_questions lookup table.
+    secret_answer_hash VARCHAR(255) NOT NULL,       -- Stores the securely hashed answer to the security question.
+    password_updated_at TIMESTAMP NOT NULL,         -- Tracks the last time the password was changed for expiration policies.
+    
+    -- Link to the user_profiles table: delete associated credentials when a user is deleted
+    CONSTRAINT fk_user_profile
+        FOREIGN KEY (user_profile_id) 
+        REFERENCES user_profiles(id)
+        ON DELETE CASCADE,
+        
+    -- Link to the security_questions table: set to RESTRICT to prevent administrators from accidentally deleting security questions that are still in use by users
+    CONSTRAINT fk_security_question
+        FOREIGN KEY (security_question_id)
+        REFERENCES security_questions(id)
+        ON DELETE RESTRICT
+);
+
 
 -- ============================================================
 --  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
