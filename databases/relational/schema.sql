@@ -47,7 +47,7 @@ CREATE TABLE user_profiles (
 CREATE TABLE security_questions (
     id SERIAL PRIMARY KEY,                          -- Serves as the surrogate primary key for the lookup table.
     question_text VARCHAR(255) UNIQUE NOT NULL,     -- The actual text of the security question.
-    is_active BOOLEAN DEFAULT TRUE                  -- Indicates whether this question is currently available for new users to select during registration.
+    is_active BOOLEAN NOT NULL DEFAULT TRUE           -- Indicates whether this question is currently available for new users to select during registration.
 );
 
 -- Table: user_credentials
