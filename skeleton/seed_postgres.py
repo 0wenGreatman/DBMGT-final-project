@@ -698,13 +698,13 @@ def seed_users(cur):
     if log_rows:
         sql = (
             "INSERT INTO login_logs (user_profile_id, login_at, status) "
-            "SELECT v.user_profile_id, v.login_at, v.status "
+            "SELECT v.user_profile_id::uuid, v.login_at::timestamp, v.status::login_status_enum "
             "FROM (VALUES %s) AS v(user_profile_id, login_at, status) "
             "WHERE NOT EXISTS ("
             "  SELECT 1 FROM login_logs l "
-            "  WHERE l.user_profile_id = v.user_profile_id "
-            "    AND l.login_at = v.login_at "
-            "    AND l.status = v.status"
+            "  WHERE l.user_profile_id = v.user_profile_id::uuid "
+            "    AND l.login_at = v.login_at::timestamp "
+            "    AND l.status = v.status::login_status_enum"
             ")"
         )
         execute_values(cur, sql, log_rows)
