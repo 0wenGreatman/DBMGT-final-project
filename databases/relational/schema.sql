@@ -82,7 +82,7 @@ CREATE TYPE login_status_enum AS ENUM ('SUCCESS', 'FAILED');
 CREATE TABLE login_logs (
     id BIGSERIAL PRIMARY KEY,                       -- Sequential primary key optimized for high-speed insert operations.
     user_profile_id UUID NOT NULL,                  -- Foreign key linking the log to a specific user profile.
-    login_at TIMESTAMP NOT NULL,                    -- The exact time the login attempt occurred.
+    login_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),      -- The exact time the login attempt occurred.
     status login_status_enum NOT NULL,              -- Indicates the outcome of the login attempt using a strict native ENUM.
 
     CONSTRAINT fk_login_logs_user
