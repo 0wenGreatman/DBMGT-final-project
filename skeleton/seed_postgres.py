@@ -15,6 +15,7 @@ import sys
 
 import psycopg2
 from psycopg2.extras import execute_values
+from argon2 import PasswordHasher
 
 # ── resolve paths ────────────────────────────────────────────────────────────
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -87,8 +88,66 @@ def seed_seat_layouts(cur):
 
 def seed_users(cur):
     data = load("registered_users.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    pass
+    
+    # Process and insert security_questions
+    questions = list({u["secret_question"] for u in data if "secret_question" in u})
+    insert_many(cur, "security_questions", ["question_text"], [(q,) for q in questions])
+    
+    cur.execute("SELECT id, question_text FROM security_questions")
+    q_map = {row[1]: row[0] for row in cur.fetchall()}
+    
+    # Process and insert user_profiles
+    user_rows = [(
+        u["user_id"],
+        u["full_name"],
+        u["email"],
+        u["phone"],
+        u["date_of_birth"],
+        u["registered_at"],
+        u.get("is_active", True)
+    ) for u in data]
+    
+    insert_many(cur, "user_profiles", 
+        ["user_id", "full_name", "email", "phone", "date_of_birth", "registered_at", "is_active"], 
+        user_rows)
+        
+    # Get DB-generated UUIDs for subsequent associations
+    cur.execute("SELECT id, user_id FROM user_profiles")
+    u_map = {row[1]: row[0] for row in cur.fetchall()}
+    
+    # Process and insert user_credentials and login_logs
+    ph = PasswordHasher()
+    cred_rows = []
+    log_rows = []
+    for u in data:
+        uid = u_map.get(u["user_id"])
+        if not uid:
+            continue
+            
+        cred_rows.append((
+            uid,
+            ph.hash(u["password"]),  # Use argon2 for password hash
+            "Argon2id",
+            q_map[u["secret_question"]],
+            ph.hash(u["secret_answer"]),  # Use argon2 for secret_answer hash
+            u["registered_at"]
+        ))
+        
+        # Generate initial SUCCESS login log only for active users
+        if u.get("is_active", True):
+            log_rows.append((
+                uid,
+                u["registered_at"],
+                "SUCCESS"
+            ))
+        
+    insert_many(cur, "user_credentials",
+        ["user_profile_id", "password_hash", "hash_algorithm", "security_question_id", "secret_answer_hash", "password_updated_at"],
+        cred_rows)
+        
+    insert_many(cur, "login_logs",
+        ["user_profile_id", "login_at", "status"],
+        log_rows)
 
 
 def seed_national_rail_bookings(cur):
