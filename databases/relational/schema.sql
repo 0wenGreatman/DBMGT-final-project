@@ -35,10 +35,10 @@
 CREATE TABLE user_profiles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Serves as the surrogate primary key for underlying database relations.
     user_id VARCHAR(50) UNIQUE NOT NULL,            -- Acts as the business identifier for frontend display and external services (e.g., RU01).
-    full_name VARCHAR(100) NOT NULL,                -- Stores the user's full legal name.
-    email VARCHAR(255) UNIQUE NOT NULL,             -- Stores the email address used for contact and potential login identification.
-    phone VARCHAR(50) NOT NULL,                     -- Stores the contact phone number.
-    date_of_birth DATE NOT NULL,                    -- Records the user's date of birth for age verification.
+    full_name VARCHAR(100) NOT NULL,                -- User's full legal name.
+    email VARCHAR(255) UNIQUE NOT NULL,             -- Potential login identification.
+    phone VARCHAR(50) NOT NULL,                     
+    date_of_birth DATE NOT NULL,                    
     registered_at TIMESTAMP NOT NULL,               -- Records the exact time the account was created.
     is_active BOOLEAN DEFAULT TRUE,                 -- Indicates whether the account is active and permitted to access the system.
     deleted_at TIMESTAMP DEFAULT NULL               -- Acts as a soft-deletion marker to maintain referential integrity.
@@ -50,7 +50,7 @@ CREATE TABLE user_profiles (
 -- Output: A list of available security questions for frontend display and backend reference.
 CREATE TABLE security_questions (
     id SERIAL PRIMARY KEY,                          -- Serves as the surrogate primary key for the lookup table.
-    question_text VARCHAR(255) UNIQUE NOT NULL,     -- Stores the actual text of the security question.
+    question_text VARCHAR(255) UNIQUE NOT NULL,     -- The actual text of the security question.
     is_active BOOLEAN DEFAULT TRUE                  -- Indicates whether this question is currently available for new users to select during registration.
 );
 
@@ -60,11 +60,11 @@ CREATE TABLE security_questions (
 -- Output: Hashes and algorithms used to validate login attempts or password reset requests.
 CREATE TABLE user_credentials (
     user_profile_id UUID PRIMARY KEY,               -- Foreign key linking strictly one-to-one with user_profiles.
-    password_hash VARCHAR(255) NOT NULL,            -- Stores the securely hashed password string including its salt.
+    password_hash VARCHAR(255) NOT NULL,            -- The securely hashed password string including its salt.
     hash_algorithm VARCHAR(20) DEFAULT 'Argon2id',  -- Identifies the algorithm used for the hash to allow future smooth migrations.
     security_question_id INT NOT NULL,              -- Foreign key referencing the standard security_questions lookup table.
-    secret_answer_hash VARCHAR(255) NOT NULL,       -- Stores the securely hashed answer to the security question.
-    password_updated_at TIMESTAMP NOT NULL,         -- Tracks the last time the password was changed for expiration policies.
+    secret_answer_hash VARCHAR(255) NOT NULL,       -- The securely hashed answer to the security question.
+    password_updated_at TIMESTAMP NOT NULL,         -- Tracks the last time the password was changed.
     
     -- Link to the user_profiles table: delete associated credentials when a user is deleted
     CONSTRAINT fk_user_profile
@@ -79,11 +79,10 @@ CREATE TABLE user_credentials (
         ON DELETE RESTRICT
 );
 
--- Step 1: Create the Native ENUM type for login status
+-- Create the Native ENUM type for login status
 -- Defines a strict set of allowed values for login outcomes to ensure data integrity at the database level.
 CREATE TYPE login_status_enum AS ENUM ('SUCCESS', 'FAILED');
 
--- Step 2: Create the login_logs table
 -- Table: login_logs
 -- Function: Records an append-only audit trail of user login attempts.
 -- Input: User UUID, precise timestamps, and the strict ENUM outcome of the login attempt.
@@ -91,7 +90,7 @@ CREATE TYPE login_status_enum AS ENUM ('SUCCESS', 'FAILED');
 CREATE TABLE login_logs (
     id BIGSERIAL PRIMARY KEY,                       -- Sequential primary key optimized for high-speed insert operations.
     user_profile_id UUID NOT NULL,                  -- Foreign key linking the log to a specific user profile.
-    login_at TIMESTAMP NOT NULL,                    -- Records the exact time the login attempt occurred.
+    login_at TIMESTAMP NOT NULL,                    -- The exact time the login attempt occurred.
     status login_status_enum NOT NULL,              -- Indicates the outcome of the login attempt using a strict native ENUM.
 
     CONSTRAINT fk_login_logs_user
