@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS ticket_type_networks (
 CREATE TABLE IF NOT EXISTS fare_classes (
     fare_class_id VARCHAR(20) PRIMARY KEY,
     network_id CHAR(1) NOT NULL,
-    display_name VARCHAR(100) NOT NULL,
+    class_display_name VARCHAR(100) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     FOREIGN KEY (network_id) REFERENCES networks (network_id),
     UNIQUE (fare_class_id, network_id),
@@ -390,6 +390,7 @@ CREATE TABLE IF NOT EXISTS coaches (
 
 -- Physical seats inside a coach. seat_code is only unique within a coach.
 
+
 CREATE TABLE IF NOT EXISTS seats (
     seat_pk VARCHAR(40) PRIMARY KEY, --seeded as coach_id + seat_code for simplicity
 
@@ -413,6 +414,7 @@ CREATE TABLE IF NOT EXISTS seats (
 CHECK ( seat_row IS NULL OR seat_row > 0 ) );
 
 -- Seat reservations for a concrete departure and travel segment.
+
 
 CREATE TABLE IF NOT EXISTS seat_reservations (
     seat_reservation_id VARCHAR(30) PRIMARY KEY,
@@ -443,6 +445,7 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
 -- Future FK after national_rail_booking is created:
 -- FOREIGN KEY (booking_id)
 --     REFERENCES national_rail_booking(booking_id),
+
 
 FOREIGN KEY (origin_station_id)
         REFERENCES stations(station_id),
