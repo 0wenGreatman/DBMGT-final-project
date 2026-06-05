@@ -99,10 +99,8 @@ CREATE TABLE IF NOT EXISTS schedule_services (
     FOREIGN KEY (destination_station_id)
         REFERENCES stations(station_id),
 
--- Origin and destination must be valid stations on this line.
-
-
-FOREIGN KEY (origin_station_id, line_id)
+    -- Origin and destination must be valid stations on this line.
+    FOREIGN KEY (origin_station_id, line_id)
         REFERENCES station_lines(station_id, line_id),
 
     FOREIGN KEY (destination_station_id, line_id)
@@ -141,14 +139,16 @@ CREATE TABLE IF NOT EXISTS schedule_stops (
         REFERENCES schedule_services(schedule_id)
         ON DELETE CASCADE,
 
--- Keeps this stop tied to the same line as the schedule header.
-FOREIGN KEY (schedule_id, line_id) REFERENCES schedule_services (schedule_id, line_id) ON DELETE CASCADE,
-FOREIGN KEY (station_id) REFERENCES stations (station_id),
+    -- Keeps this stop tied to the same line as the schedule header.
+    FOREIGN KEY (schedule_id, line_id)
+        REFERENCES schedule_services(schedule_id, line_id)
+        ON DELETE CASCADE,
 
--- Prevents a schedule from stopping at a station outside its line.
+    FOREIGN KEY (station_id)
+        REFERENCES stations(station_id),
 
-
-FOREIGN KEY (station_id, line_id)
+    -- Prevents a schedule from stopping at a station outside its line.
+    FOREIGN KEY (station_id, line_id)
         REFERENCES station_lines(station_id, line_id),
 
     CHECK (stop_sequence > 0),
@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS ticket_type_networks (
     advance_purchase BOOLEAN NOT NULL DEFAULT FALSE,
     advance_purchase_max_days INTEGER,
     changes_allowed BOOLEAN NOT NULL DEFAULT FALSE,
-    change_fee_cents INTEGER,
+    change_fee_usd DECIMAL(10, 2),
     refundable BOOLEAN NOT NULL DEFAULT FALSE,
     notes TEXT,
     PRIMARY KEY (ticket_type_id, network_id),
@@ -236,8 +236,8 @@ CREATE TABLE IF NOT EXISTS ticket_type_networks (
         OR advance_purchase_max_days >= 0
     ),
     CHECK (
-        change_fee_cents IS NULL
-        OR change_fee_cents >= 0
+        change_fee_usd IS NULL
+        OR change_fee_usd >= 0
     )
 );
 
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS fare_classes (
     CHECK (network_id IN ('M', 'N'))
 );
 
--- Pricing rules. Monetary values are stored as USD cents, not floats. To avoid floating point precision issues.
+-- Pricing rules. Monetary values use DECIMAL USD values, not FLOAT.
 
 
 CREATE TABLE IF NOT EXISTS fare_rules (
@@ -263,93 +263,105 @@ CREATE TABLE IF NOT EXISTS fare_rules (
     ticket_type_id VARCHAR(20) NOT NULL,
     fare_class_id VARCHAR(20),
 
--- Pricing model decides which fare amount columns must be filled.
--- stops_based: schedule fare without fare class, e.g. metro single.
--- stops_based_with_fare_class: schedule fare varies by class.
--- stops_based_per_leg: return ticket prices each leg separately.
--- flat_rate: fixed fare not tied to a schedule.
-pricing_model VARCHAR(40) NOT NULL,
+    -- Pricing model decides which fare amount columns must be filled.
+    -- stops_based: schedule fare without fare class, e.g. metro single.
+    -- stops_based_with_fare_class: schedule fare varies by class.
+    -- stops_based_per_leg: return ticket prices each leg separately.
+    -- flat_rate: fixed fare not tied to a schedule.
+    pricing_model VARCHAR(40) NOT NULL,
 
--- use "USD cents" to store monetary values, e.g. 250 means $2.50 USD
-base_fare_cents INTEGER,
-per_stop_rate_cents INTEGER,
-flat_fare_cents INTEGER,
-currency CHAR(3) NOT NULL DEFAULT 'USD',
-effective_from DATE NOT NULL DEFAULT CURRENT_DATE, --Additional column to track when a fare rule becomes effective.
-effective_to DATE, --Optional column to track when a fare rule is no longer effective. Null means it is currently active.
-is_active BOOLEAN NOT NULL DEFAULT TRUE,
-created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-FOREIGN KEY (network_id) REFERENCES networks (network_id),
-FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id),
-FOREIGN KEY (ticket_type_id) REFERENCES ticket_types (ticket_type_id),
+    -- Use DECIMAL for currency values to avoid floating point issues.
+    -- All prices are in USD for simplicity.
+    base_fare_usd DECIMAL(10, 2),
+    per_stop_rate_usd DECIMAL(10, 2),
+    price_usd DECIMAL(10, 2),
 
--- Ensures the ticket type is actually available on this network.
-FOREIGN KEY (ticket_type_id, network_id) REFERENCES ticket_type_networks (ticket_type_id, network_id),
+    currency CHAR(3) NOT NULL DEFAULT 'USD',
+    effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
+    effective_to DATE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
--- Ensures the fare class belongs to the same network when present.
-FOREIGN KEY (fare_class_id, network_id) REFERENCES fare_classes (fare_class_id, network_id),
-CHECK (network_id IN ('M', 'N')),
-CHECK (
-    pricing_model IN (
-        'stops_based',
-        'stops_based_with_fare_class',
-        'stops_based_per_leg',
-        'flat_rate'
-    )
-),
-CHECK (currency = 'USD'),
-CHECK (
-    base_fare_cents IS NULL
-    OR base_fare_cents >= 0
-),
-CHECK (
-    per_stop_rate_cents IS NULL
-    OR per_stop_rate_cents >= 0
-),
-CHECK (
-    flat_fare_cents IS NULL
-    OR flat_fare_cents >= 0
-),
-CHECK (
-    effective_to IS NULL
-    OR effective_to >= effective_from
-),
-CHECK (
-    -- flat_rate uses only flat_fare_cents, e.g. metro day pass.
-    (
-        pricing_model = 'flat_rate'
-        AND schedule_id IS NULL
-        AND fare_class_id IS NULL
-        AND flat_fare_cents IS NOT NULL
-        AND base_fare_cents IS NULL
-        AND per_stop_rate_cents IS NULL
-    )
-    -- stops_based uses base + per-stop rate for one schedule.
-    OR (
-        pricing_model = 'stops_based'
-        AND schedule_id IS NOT NULL
-        AND fare_class_id IS NULL
-        AND base_fare_cents IS NOT NULL
-        AND per_stop_rate_cents IS NOT NULL
-        AND flat_fare_cents IS NULL
-    )
-    -- Class-based models use base + per-stop rate for one schedule and class.
-    OR (
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (network_id)
+        REFERENCES networks(network_id),
+
+    FOREIGN KEY (schedule_id)
+        REFERENCES schedule_services(schedule_id),
+
+    FOREIGN KEY (ticket_type_id)
+        REFERENCES ticket_types(ticket_type_id),
+
+    -- Ensures the ticket type is actually available on this network.
+    FOREIGN KEY (ticket_type_id, network_id)
+        REFERENCES ticket_type_networks(ticket_type_id, network_id),
+
+    -- Ensures the fare class belongs to the same network when present.
+    FOREIGN KEY (fare_class_id, network_id)
+        REFERENCES fare_classes(fare_class_id, network_id),
+
+    CHECK (network_id IN ('M', 'N')),
+    CHECK (
         pricing_model IN (
+            'stops_based',
             'stops_based_with_fare_class',
-            'stops_based_per_leg'
+            'stops_based_per_leg',
+            'flat_rate'
         )
-        AND schedule_id IS NOT NULL
-        AND fare_class_id IS NOT NULL
-        AND base_fare_cents IS NOT NULL
-        AND per_stop_rate_cents IS NOT NULL
-        AND flat_fare_cents IS NULL
-    )
-),
+    ),
+    CHECK (currency = 'USD'),
+    CHECK (
+        base_fare_usd IS NULL
+        OR base_fare_usd >= 0
+    ),
+    CHECK (
+        per_stop_rate_usd IS NULL
+        OR per_stop_rate_usd >= 0
+    ),
+    CHECK (
+        price_usd IS NULL
+        OR price_usd >= 0
+    ),
+    CHECK (
+        effective_to IS NULL
+        OR effective_to >= effective_from
+    ),
+    CHECK (
+        -- flat_rate uses only price_usd, e.g. metro day pass.
+        (
+            pricing_model = 'flat_rate'
+            AND schedule_id IS NULL
+            AND fare_class_id IS NULL
+            AND price_usd IS NOT NULL
+            AND base_fare_usd IS NULL
+            AND per_stop_rate_usd IS NULL
+        )
+        -- stops_based uses base + per-stop rate for one schedule.
+        OR (
+            pricing_model = 'stops_based'
+            AND schedule_id IS NOT NULL
+            AND fare_class_id IS NULL
+            AND base_fare_usd IS NOT NULL
+            AND per_stop_rate_usd IS NOT NULL
+            AND price_usd IS NULL
+        )
+        -- Class-based models use base + per-stop rate for one schedule and class.
+        OR (
+            pricing_model IN (
+                'stops_based_with_fare_class',
+                'stops_based_per_leg'
+            )
+            AND schedule_id IS NOT NULL
+            AND fare_class_id IS NOT NULL
+            AND base_fare_usd IS NOT NULL
+            AND per_stop_rate_usd IS NOT NULL
+            AND price_usd IS NULL
+        )
+    ),
 
--- Ensures no duplicate fare rules for the same combination of network, schedule, ticket type, fare class, and effective date.
-CONSTRAINT uq_fare_rules_unique
+    -- Ensures no duplicate fare rules for the same combination of network, schedule, ticket type, fare class, and effective date.
+    CONSTRAINT uq_fare_rules_unique
         UNIQUE NULLS NOT DISTINCT (
             network_id,
             schedule_id,
@@ -376,7 +388,8 @@ CREATE TABLE IF NOT EXISTS seat_layouts (
 
 -- Coaches inside one seat layout, such as coach A or B.
 CREATE TABLE IF NOT EXISTS coaches (
-    coach_id VARCHAR(30) PRIMARY KEY, --seeded as layout_id + coach_code for simplicity
+    -- Seeded as layout_id + coach_code for simplicity.
+    coach_id VARCHAR(30) PRIMARY KEY,
     layout_id VARCHAR(20) NOT NULL,
     coach_code VARCHAR(10) NOT NULL,
     fare_class_id VARCHAR(20) NOT NULL,
@@ -392,11 +405,13 @@ CREATE TABLE IF NOT EXISTS coaches (
 
 
 CREATE TABLE IF NOT EXISTS seats (
-    seat_pk VARCHAR(40) PRIMARY KEY, --seeded as coach_id + seat_code for simplicity
+    -- Seeded as coach_id + seat_code for simplicity.
+    seat_pk VARCHAR(40) PRIMARY KEY,
 
     coach_id VARCHAR(30) NOT NULL,
 
-    seat_code VARCHAR(10) NOT NULL, -- e.g. "1A", "2B". Not globally unique, only unique within a coach.
+    -- e.g. "1A", "2B"; not globally unique.
+    seat_code VARCHAR(10) NOT NULL,
     seat_row INTEGER,
     seat_column VARCHAR(5),
 
@@ -409,9 +424,14 @@ CREATE TABLE IF NOT EXISTS seats (
         REFERENCES coaches(coach_id)
         ON DELETE CASCADE,
 
-    UNIQUE (coach_id, seat_code), -- Ensures no duplicate seat codes within the same coach.
+    -- Ensures no duplicate seat codes within the same coach.
+    UNIQUE (coach_id, seat_code),
 
-CHECK ( seat_row IS NULL OR seat_row > 0 ) );
+    CHECK (
+        seat_row IS NULL
+        OR seat_row > 0
+    )
+);
 
 -- Seat reservations for a concrete departure and travel segment.
 
@@ -442,12 +462,11 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
     FOREIGN KEY (seat_pk)
         REFERENCES seats(seat_pk),
 
--- Future FK after national_rail_booking is created:
--- FOREIGN KEY (booking_id)
---     REFERENCES national_rail_booking(booking_id),
+    -- Future FK after national_rail_booking is created:
+    -- FOREIGN KEY (booking_id)
+    --     REFERENCES national_rail_booking(booking_id),
 
-
-FOREIGN KEY (origin_station_id)
+    FOREIGN KEY (origin_station_id)
         REFERENCES stations(station_id),
 
     FOREIGN KEY (destination_station_id)
