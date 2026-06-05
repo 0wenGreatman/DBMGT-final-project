@@ -69,8 +69,6 @@ CREATE TABLE IF NOT EXISTS station_lines (
 -- ============================================================
 
 -- Timetable header for one service pattern on a line.
-
-
 CREATE TABLE IF NOT EXISTS schedule_services (
     schedule_id            VARCHAR(20) PRIMARY KEY,
     line_id                VARCHAR(10) NOT NULL,
@@ -116,8 +114,6 @@ CREATE TABLE IF NOT EXISTS schedule_services (
 
 -- Ordered stop list for each timetable.
 -- line_id is included so each stop can be checked against station_lines.
-
-
 CREATE TABLE IF NOT EXISTS schedule_stops (
     schedule_id                 VARCHAR(20) NOT NULL,
     line_id                     VARCHAR(10) NOT NULL,
@@ -253,8 +249,6 @@ CREATE TABLE IF NOT EXISTS fare_classes (
 );
 
 -- Pricing rules. Monetary values use DECIMAL USD values, not FLOAT.
-
-
 CREATE TABLE IF NOT EXISTS fare_rules (
     fare_rule_id VARCHAR(30) PRIMARY KEY,
 
@@ -402,8 +396,6 @@ CREATE TABLE IF NOT EXISTS coaches (
 );
 
 -- Physical seats inside a coach. seat_code is only unique within a coach.
-
-
 CREATE TABLE IF NOT EXISTS seats (
     -- Seeded as coach_id + seat_code for simplicity.
     seat_pk VARCHAR(40) PRIMARY KEY,
@@ -434,8 +426,6 @@ CREATE TABLE IF NOT EXISTS seats (
 );
 
 -- Seat reservations for a concrete departure and travel segment.
-
-
 CREATE TABLE IF NOT EXISTS seat_reservations (
     seat_reservation_id VARCHAR(30) PRIMARY KEY,
 
