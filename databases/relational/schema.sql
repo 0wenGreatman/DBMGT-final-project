@@ -79,6 +79,30 @@ CREATE TABLE user_credentials (
         ON DELETE RESTRICT
 );
 
+-- Step 1: Create the Native ENUM type for login status
+-- Defines a strict set of allowed values for login outcomes to ensure data integrity at the database level.
+CREATE TYPE login_status_enum AS ENUM ('SUCCESS', 'FAILED');
+
+-- Step 2: Create the login_logs table
+-- Table: login_logs
+-- Function: Records an append-only audit trail of user login attempts.
+-- Input: User UUID, precise timestamps, and the strict ENUM outcome of the login attempt.
+-- Output: Historical logs for basic AI session validation and access auditing.
+CREATE TABLE login_logs (
+    id BIGSERIAL PRIMARY KEY,                       -- Sequential primary key optimized for high-speed insert operations.
+    user_profile_id UUID NOT NULL,                  -- Foreign key linking the log to a specific user profile.
+    login_at TIMESTAMP NOT NULL,                    -- Records the exact time the login attempt occurred.
+    status login_status_enum NOT NULL,              -- Indicates the outcome of the login attempt using a strict native ENUM.
+
+    CONSTRAINT fk_login_logs_user
+        FOREIGN KEY (user_profile_id) 
+        REFERENCES user_profiles(id)
+        ON DELETE CASCADE
+);
+
+-- Optimizes read performance for querying a specific user's most recent logins.
+CREATE INDEX idx_login_logs_user_time ON login_logs(user_profile_id, login_at DESC);
+
 
 -- ============================================================
 --  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
