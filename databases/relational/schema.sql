@@ -29,9 +29,7 @@
 -- ============================================================
 
 -- Table: user_profiles
--- Function: Stores the primary contact information and lifecycle state for users.
--- Input: User's personal details provided during registration.
--- Output: Structured user profile data, filtered to exclude soft-deleted records for AI and business queries.
+-- Stores the primary contact information and lifecycle state for users.
 CREATE TABLE user_profiles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Serves as the surrogate primary key for underlying database relations.
     user_id VARCHAR(50) UNIQUE NOT NULL,            -- Acts as the business identifier for frontend display and external services (e.g., RU01).
@@ -45,9 +43,7 @@ CREATE TABLE user_profiles (
 );
 
 -- Table: security_questions
--- Function: Acts as a centralized lookup table for standardized security questions, ensuring data consistency and simplifying maintenance.
--- Input: Pre-defined security question strings created by system administrators.
--- Output: A list of available security questions for frontend display and backend reference.
+-- Acts as a centralized lookup table for standardized security questions, ensuring data consistency and simplifying maintenance.
 CREATE TABLE security_questions (
     id SERIAL PRIMARY KEY,                          -- Serves as the surrogate primary key for the lookup table.
     question_text VARCHAR(255) UNIQUE NOT NULL,     -- The actual text of the security question.
@@ -55,9 +51,7 @@ CREATE TABLE security_questions (
 );
 
 -- Table: user_credentials
--- Function: Secures authentication keys, algorithms, and security questions. Restricted to Auth services.
--- Input: Argon2 hashed passwords, foreign key to the security question, and hashed answers.
--- Output: Hashes and algorithms used to validate login attempts or password reset requests.
+-- Secures authentication keys, algorithms, and security questions. Restricted to Auth services.
 CREATE TABLE user_credentials (
     user_profile_id UUID PRIMARY KEY,               -- Foreign key linking strictly one-to-one with user_profiles.
     password_hash VARCHAR(255) NOT NULL,            -- The securely hashed password string including its salt.
@@ -84,9 +78,7 @@ CREATE TABLE user_credentials (
 CREATE TYPE login_status_enum AS ENUM ('SUCCESS', 'FAILED');
 
 -- Table: login_logs
--- Function: Records an append-only audit trail of user login attempts.
--- Input: User UUID, precise timestamps, and the strict ENUM outcome of the login attempt.
--- Output: Historical logs for basic AI session validation and access auditing.
+-- Records an append-only audit trail of user login attempts.
 CREATE TABLE login_logs (
     id BIGSERIAL PRIMARY KEY,                       -- Sequential primary key optimized for high-speed insert operations.
     user_profile_id UUID NOT NULL,                  -- Foreign key linking the log to a specific user profile.
