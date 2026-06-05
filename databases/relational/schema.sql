@@ -37,9 +37,9 @@ CREATE TABLE user_profiles (
     email VARCHAR(255) UNIQUE NOT NULL,             -- Potential login identification.
     phone VARCHAR(50) NOT NULL,                     
     date_of_birth DATE NOT NULL,                    
-    registered_at TIMESTAMP NOT NULL,               -- Records the exact time the account was created.
-    is_active BOOLEAN DEFAULT TRUE,                 -- Indicates whether the account is active and permitted to access the system.
-    deleted_at TIMESTAMP DEFAULT NULL               -- Acts as a soft-deletion marker to maintain referential integrity.
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Records the exact time the account was created.
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,          -- Indicates whether the account is active and permitted to access the system.
+    deleted_at TIMESTAMPTZ                            -- Acts as a soft-deletion marker to maintain referential integrity.
 );
 
 -- Table: security_questions
