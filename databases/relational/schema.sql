@@ -44,6 +44,16 @@ CREATE TABLE user_profiles (
     deleted_at TIMESTAMP DEFAULT NULL               -- Acts as a soft-deletion marker to maintain referential integrity.
 );
 
+-- Table: security_questions
+-- Function: Acts as a centralized lookup table for standardized security questions, ensuring data consistency and simplifying maintenance.
+-- Input: Pre-defined security question strings created by system administrators.
+-- Output: A list of available security questions for frontend display and backend reference.
+CREATE TABLE security_questions (
+    id SERIAL PRIMARY KEY,                          -- Serves as the surrogate primary key for the lookup table.
+    question_text VARCHAR(255) UNIQUE NOT NULL,     -- Stores the actual text of the security question.
+    is_active BOOLEAN DEFAULT TRUE                  -- Indicates whether this question is currently available for new users to select during registration.
+);
+
 
 -- ============================================================
 --  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
