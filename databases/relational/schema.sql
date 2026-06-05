@@ -58,7 +58,7 @@ CREATE TABLE user_credentials (
     hash_algorithm VARCHAR(20) DEFAULT 'Argon2id',  -- Identifies the algorithm used for the hash to allow future smooth migrations.
     security_question_id INT NOT NULL,              -- Foreign key referencing the standard security_questions lookup table.
     secret_answer_hash VARCHAR(255) NOT NULL,       -- The securely hashed answer to the security question.
-    password_updated_at TIMESTAMP NOT NULL,         -- Tracks the last time the password was changed.
+    password_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Tracks the last time the password was changed.
     
     -- Link to the user_profiles table: delete associated credentials when a user is deleted
     CONSTRAINT fk_user_profile
