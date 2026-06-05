@@ -635,7 +635,7 @@ def seed_seat_layouts(cur):
         seat_rows,
     )
 
-"""
+
 def seed_users(cur):
     data = load("registered_users.json")
     
@@ -732,7 +732,7 @@ def seed_feedback(cur):
     data = load("feedback.json")
     # TODO: Design your table schema, then implement the INSERT logic here.
     pass
-"""
+
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
@@ -750,11 +750,11 @@ def main():
         seed_national_rail_schedules(cur)
         seed_service_departures(cur)
         seed_seat_layouts(cur)
-        #seed_users(cur)
-        #seed_national_rail_bookings(cur)
-        #seed_metro_travels(cur)
-        #seed_payments(cur)
-        #seed_feedback(cur)
+        seed_users(cur)
+        seed_national_rail_bookings(cur)
+        seed_metro_travels(cur)
+        seed_payments(cur)
+        seed_feedback(cur)
         conn.commit()
         print("\nAll done. Database seeded successfully.")
     except Exception as e:
