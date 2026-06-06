@@ -48,12 +48,12 @@ def seed():
             session.run("""
                 CREATE (n:MetroStation {
                     station_id: $station_id,
-                    name: $name,
+                    station_name: $station_name,
                     lines: $lines,
                     is_interchange_metro: $is_interchange_metro,
                     is_interchange_national_rail: $is_interchange_national_rail
                 })
-            """, station_id=ms['station_id'], name=ms['name'], lines=ms['lines'],
+            """, station_id=ms['station_id'], station_name=ms['name'], lines=ms['lines'],
                  is_interchange_metro=ms.get('is_interchange_metro', False),
                  is_interchange_national_rail=ms.get('is_interchange_national_rail', False))
 
@@ -64,12 +64,12 @@ def seed():
             session.run("""
                 CREATE (n:NationalRailStation {
                     station_id: $station_id,
-                    name: $name,
+                    station_name: $station_name,
                     lines: $lines,
                     is_interchange_national_rail: $is_interchange_national_rail,
                     is_interchange_metro: $is_interchange_metro
                 })
-            """, station_id=ns['station_id'], name=ns['name'], lines=ns['lines'],
+            """, station_id=ns['station_id'], station_name=ns['name'], lines=ns['lines'],
                  is_interchange_national_rail=ns.get('is_interchange_national_rail', False),
                  is_interchange_metro=ns.get('is_interchange_metro', False))
 
@@ -82,10 +82,10 @@ def seed():
                 session.run("""
                     MATCH (a:MetroStation {station_id: $source_id})
                     MATCH (b:MetroStation {station_id: $target_id})
-                    MERGE (a)-[r:METRO_LINK {line: $line}]->(b)
+                    MERGE (a)-[r:METRO_LINK {line_id: $line}]->(b)
                     SET r.travel_time_min = $time
                 """, source_id=ms['station_id'], target_id=adj['station_id'], 
-                     line=adj['line'], time=adj['travel_time_min'])
+                     line=adj.get('line', adj.get('line_id')), time=adj['travel_time_min'])
 
         # TODO: Design your relationship types and create national rail links.
         print("  Creating National Rail links...")
@@ -94,10 +94,10 @@ def seed():
                 session.run("""
                     MATCH (a:NationalRailStation {station_id: $source_id})
                     MATCH (b:NationalRailStation {station_id: $target_id})
-                    MERGE (a)-[r:RAIL_LINK {line: $line}]->(b)
+                    MERGE (a)-[r:RAIL_LINK {line_id: $line}]->(b)
                     SET r.travel_time_min = $time
                 """, source_id=ns['station_id'], target_id=adj['station_id'], 
-                     line=adj['line'], time=adj['travel_time_min'])
+                     line=adj.get('line', adj.get('line_id')), time=adj['travel_time_min'])
 
         # TODO: Create interchange relationships between metro and rail stations.
         # Interchange info is in the is_interchange_national_rail field
