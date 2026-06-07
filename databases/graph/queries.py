@@ -134,7 +134,66 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
     Returns:
         dict with found, stations list, interchange points, total_time_min
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    # Cypher query to find the shortest path utilizing METRO_LINK, RAIL_LINK, and INTERCHANGE relationships.
+    # coalesce is used to provide a default walking time (e.g., 5 mins) for INTERCHANGE links which lack travel_time_min.
+    query = """
+        MATCH (start {station_id: $origin_id})
+        MATCH (end {station_id: $destination_id})
+        MATCH p = shortestPath((start)-[:METRO_LINK|RAIL_LINK|INTERCHANGE*]-(end))
+        RETURN nodes(p) AS stations,
+               relationships(p) AS links,
+               reduce(time = 0, r IN relationships(p) | time + coalesce(r.travel_time_min, 5)) AS total_time_min
+    """
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(query, origin_id=origin_id, destination_id=destination_id)
+                record = result.single()
+
+                if not record:
+                    print(f"[Info] query_interchange_path: No path found from '{origin_id}' to '{destination_id}'.")
+                    return {
+                        "found": False,
+                        "stations": [],
+                        "interchange_points": [],
+                        "total_time_min": 0
+                    }
+
+                stations = []
+                interchange_points = []
+                
+                # Extract station details into a list of dictionaries
+                for node in record["stations"]:
+                    stations.append({
+                        "station_id": node.get("station_id"),
+                        "name": node.get("station_name"),
+                        "lines": node.get("lines")
+                    })
+                    
+                # Identify interchange points by inspecting relationships for type 'INTERCHANGE'
+                for rel in record["links"]:
+                    if rel.type == "INTERCHANGE":
+                        # Add the start and end node names of the interchange relationship
+                        for node in rel.nodes:
+                            node_name = node.get("station_name")
+                            if node_name not in interchange_points:
+                                interchange_points.append(node_name)
+
+                return {
+                    "found": True,
+                    "stations": stations,
+                    "interchange_points": interchange_points,
+                    "total_time_min": record["total_time_min"]
+                }
+    except Exception as e:
+        # Provide a fallback error handler to ensure the app doesn't crash on DB failure
+        print(f"[Error] query_interchange_path failed for {origin_id} -> {destination_id}: {e}")
+        return {
+            "found": False,
+            "stations": [],
+            "interchange_points": [],
+            "total_time_min": 0
+        }
 
 
 # ── DELAY RIPPLE ANALYSIS ─────────────────────────────────────────────────────
