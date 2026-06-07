@@ -213,15 +213,15 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
     Returns:
         dict with found, stations list, interchange points, total_time_min
     """
-    # Cypher query to find the shortest path utilizing METRO_LINK, RAIL_LINK, and INTERCHANGE relationships.
-    # coalesce is used to provide a default walking time (e.g., 5 mins) for INTERCHANGE links which lack travel_time_min.
+    # Cypher query utilizing APOC Dijkstra algorithm to find the shortest path
+    # weighted by the 'travel_time_min' property, defaulting to 5 mins for INTERCHANGE links.
     query = """
         MATCH (start {station_id: $origin_id})
         MATCH (end {station_id: $destination_id})
-        MATCH p = shortestPath((start)-[:METRO_LINK|RAIL_LINK|INTERCHANGE*]-(end))
-        RETURN nodes(p) AS stations,
-               relationships(p) AS links,
-               reduce(time = 0, r IN relationships(p) | time + coalesce(r.travel_time_min, 5)) AS total_time_min
+        CALL apoc.algo.dijkstra(start, end, 'METRO_LINK|RAIL_LINK|INTERCHANGE', 'travel_time_min', 5.0) YIELD path, weight
+        RETURN nodes(path) AS stations,
+               relationships(path) AS links,
+               weight AS total_time_min
     """
     try:
         with _driver() as driver:
