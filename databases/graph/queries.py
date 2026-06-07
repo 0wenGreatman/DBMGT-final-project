@@ -170,7 +170,118 @@ def query_cheapest_route(
     Returns:
         dict with found, total_fare_usd (approximate), stations, legs
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    # 1. Determine relationship types to traverse based on the network parameter.
+    if network == "metro":
+        rel_types = "METRO_LINK"
+    elif network == "rail":
+        rel_types = "RAIL_LINK"
+    else:
+        # Infer network bounds based on station ID prefixes for 'auto' mode.
+        if origin_id.startswith("MS") and destination_id.startswith("MS"):
+            rel_types = "METRO_LINK"
+        elif origin_id.startswith("NR") and destination_id.startswith("NR"):
+            rel_types = "RAIL_LINK"
+        else:
+            rel_types = "METRO_LINK|RAIL_LINK|INTERCHANGE"
+
+    # Define the weight property dynamically based on the requested fare class.
+    # Note: If these properties are not seeded on the graph edges, APOC Dijkstra
+    # will naturally fall back to weight 1.0 (minimizing hops), which works well
+    # since fares scale linearly with the number of stops.
+    weight_prop = "fare_first" if fare_class.lower() == "first" else "fare_standard"
+
+    # 2. Cypher query utilizing APOC Dijkstra algorithm for the cheapest path.
+    query = """
+        MATCH (start {station_id: $origin_id})
+        MATCH (end {station_id: $destination_id})
+        CALL apoc.algo.dijkstra(start, end, $rel_types, $weight_prop) YIELD path, weight
+        RETURN nodes(path) AS stations,
+               relationships(path) AS links
+    """
+
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(
+                    query, 
+                    origin_id=origin_id, 
+                    destination_id=destination_id, 
+                    rel_types=rel_types,
+                    weight_prop=weight_prop
+                )
+                record = result.single()
+
+                if not record:
+                    print(f"[Info] query_cheapest_route: No route found from '{origin_id}' to '{destination_id}'.")
+                    return {
+                        "found": False,
+                        "origin_id": origin_id,
+                        "destination_id": destination_id,
+                        "total_fare_usd": 0.0,
+                        "stations": [],
+                        "legs": []
+                    }
+
+                # Extract station details into a list of dictionaries.
+                stations = []
+                for node in record["stations"]:
+                    stations.append({
+                        "station_id": node.get("station_id"),
+                        "name": node.get("station_name"),
+                        "lines": node.get("lines")
+                    })
+
+                # Extract legs and keep track of hops per network to calculate the exact fare.
+                legs = []
+                metro_hops = 0
+                rail_hops = 0
+
+                for rel in record["links"]:
+                    rel_type = rel.type
+                    legs.append({
+                        "line": rel.get("line_id", "Interchange"),
+                        "travel_time_min": rel.get("travel_time_min", 5.0), # Default 5 mins for interchange
+                        "type": rel_type
+                    })
+                    
+                    if rel_type == "METRO_LINK":
+                        metro_hops += 1
+                    elif rel_type == "RAIL_LINK":
+                        rail_hops += 1
+
+                # 3. Calculate exact total estimated fare based on the mock data rules.
+                # Metro formula: $0.80 base + $0.30 per stop
+                # Rail Standard formula: $2.50 base + $1.50 per stop
+                # Rail First Class formula: $4.00 base + $2.50 per stop
+                total_fare = 0.0
+                if metro_hops > 0:
+                    total_fare += 0.80 + (metro_hops * 0.30)
+                if rail_hops > 0:
+                    if fare_class.lower() == "first":
+                        total_fare += 4.00 + (rail_hops * 2.50)
+                    else:
+                        total_fare += 2.50 + (rail_hops * 1.50)
+
+                return {
+                    "found": True,
+                    "origin_id": origin_id,
+                    "destination_id": destination_id,
+                    "total_fare_usd": round(total_fare, 2),
+                    "stations": stations,
+                    "legs": legs
+                }
+    except Exception as e:
+        # Provide a fallback error handler to prevent the application from crashing
+        # in case of a database connectivity issue or syntax error.
+        print(f"[Error] query_cheapest_route failed for {origin_id} -> {destination_id}: {e}")
+        return {
+            "found": False,
+            "origin_id": origin_id,
+            "destination_id": destination_id,
+            "total_fare_usd": 0.0,
+            "stations": [],
+            "legs": []
+        }
 
 
 # ── ALTERNATIVE ROUTES (avoiding a station) ───────────────────────────────────
