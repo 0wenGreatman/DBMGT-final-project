@@ -151,6 +151,9 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     Returns:
         List of dicts: {station_id, name, hops_away, lines_affected}
     """
+    # MATCH: Finds paths 'p' starting from the delayed station and traversing outwards by 1 to 'hops' relationships.
+    # WHERE: Filters out the starting station itself so it doesn't appear in the results.
+    # WITH: Groups by 'affected' station and finds the shortest path length (min(length(p))) to avoid duplicates.
     query = f"""
         MATCH p = (start {{station_id: $delayed_station_id}})-[*1..{hops}]-(affected)
         WHERE affected.station_id <> $delayed_station_id
@@ -165,7 +168,9 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
         with _driver() as driver:
             with driver.session() as session:
                 result = session.run(query, delayed_station_id=delayed_station_id)
+                
                 affected_stations = []
+                # Iterate through the returned records and map them to a list of dictionaries
                 for record in result:
                     affected_stations.append({
                         "station_id": record.get("station_id"),
@@ -174,11 +179,13 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
                         "lines_affected": record.get("lines_affected")
                     })
                 
+                # Check if the result list is empty and log an informational message
                 if not affected_stations:
                     print(f"[Info] query_delay_ripple: No data found for station '{delayed_station_id}' within {hops} hops.")
                     
                 return affected_stations
     except Exception as e:
+        # Catch any connection or query execution errors to prevent the app from crashing
         print(f"[Error] query_delay_ripple failed for station '{delayed_station_id}': {e}")
         return []
 
@@ -204,7 +211,9 @@ def query_station_connections(station_id: str) -> list[dict]:
         with _driver() as driver:
             with driver.session() as session:
                 result = session.run(query, station_id=station_id)
+                
                 connections = []
+                # Iterate through the returned records and extract connection details into a dictionary
                 for record in result:
                     connections.append({
                         "target_id": record.get("target_id"),
@@ -214,10 +223,12 @@ def query_station_connections(station_id: str) -> list[dict]:
                         "travel_time_min": record.get("travel_time_min")
                     })
                 
+                # Log an informational message if no connections were found for the given station
                 if not connections:
                     print(f"[Info] query_station_connections: No connections found for station '{station_id}'.")
                     
                 return connections
     except Exception as e:
+        # Catch and log any exceptions (e.g., database connection issues) to avoid unhandled crashes
         print(f"[Error] query_station_connections failed for station '{station_id}': {e}")
         return []
