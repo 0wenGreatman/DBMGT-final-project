@@ -163,4 +163,24 @@ def query_station_connections(station_id: str) -> list[dict]:
     Args:
         station_id: e.g. "MS01" or "NR01"
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    query = """
+        MATCH (a {station_id: $station_id})-[r]->(b)
+        RETURN b.station_id AS target_id,
+               b.station_name AS target_name,
+               type(r) AS connection_type,
+               r.line_id AS line,
+               r.travel_time_min AS travel_time_min
+    """
+    with _driver() as driver:
+        with driver.session() as session:
+            result = session.run(query, station_id=station_id)
+            connections = []
+            for record in result:
+                connections.append({
+                    "target_id": record["target_id"],
+                    "target_name": record["target_name"],
+                    "connection_type": record["connection_type"],
+                    "line": record["line"],
+                    "travel_time_min": record["travel_time_min"]
+                })
+            return connections
