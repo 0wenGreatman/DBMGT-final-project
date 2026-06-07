@@ -161,18 +161,26 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
                affected.lines AS lines_affected
         ORDER BY hops_away, station_id
     """
-    with _driver() as driver:
-        with driver.session() as session:
-            result = session.run(query, delayed_station_id=delayed_station_id)
-            affected_stations = []
-            for record in result:
-                affected_stations.append({
-                    "station_id": record["station_id"],
-                    "name": record["name"],
-                    "hops_away": record["hops_away"],
-                    "lines_affected": record["lines_affected"]
-                })
-            return affected_stations
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(query, delayed_station_id=delayed_station_id)
+                affected_stations = []
+                for record in result:
+                    affected_stations.append({
+                        "station_id": record.get("station_id"),
+                        "name": record.get("name"),
+                        "hops_away": record.get("hops_away"),
+                        "lines_affected": record.get("lines_affected")
+                    })
+                
+                if not affected_stations:
+                    print(f"[Info] query_delay_ripple: No data found for station '{delayed_station_id}' within {hops} hops.")
+                    
+                return affected_stations
+    except Exception as e:
+        print(f"[Error] query_delay_ripple failed for station '{delayed_station_id}': {e}")
+        return []
 
 
 # ── STATION CONNECTIONS ───────────────────────────────────────────────────────
@@ -192,16 +200,24 @@ def query_station_connections(station_id: str) -> list[dict]:
                r.line_id AS line,
                r.travel_time_min AS travel_time_min
     """
-    with _driver() as driver:
-        with driver.session() as session:
-            result = session.run(query, station_id=station_id)
-            connections = []
-            for record in result:
-                connections.append({
-                    "target_id": record["target_id"],
-                    "target_name": record["target_name"],
-                    "connection_type": record["connection_type"],
-                    "line": record["line"],
-                    "travel_time_min": record["travel_time_min"]
-                })
-            return connections
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(query, station_id=station_id)
+                connections = []
+                for record in result:
+                    connections.append({
+                        "target_id": record.get("target_id"),
+                        "target_name": record.get("target_name"),
+                        "connection_type": record.get("connection_type"),
+                        "line": record.get("line"),
+                        "travel_time_min": record.get("travel_time_min")
+                    })
+                
+                if not connections:
+                    print(f"[Info] query_station_connections: No connections found for station '{station_id}'.")
+                    
+                return connections
+    except Exception as e:
+        print(f"[Error] query_station_connections failed for station '{station_id}': {e}")
+        return []
