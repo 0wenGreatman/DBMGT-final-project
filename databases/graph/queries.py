@@ -151,7 +151,28 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     Returns:
         List of dicts: {station_id, name, hops_away, lines_affected}
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    query = f"""
+        MATCH p = (start {{station_id: $delayed_station_id}})-[*1..{hops}]-(affected)
+        WHERE affected.station_id <> $delayed_station_id
+        WITH affected, min(length(p)) AS hops_away
+        RETURN affected.station_id AS station_id,
+               affected.station_name AS name,
+               hops_away,
+               affected.lines AS lines_affected
+        ORDER BY hops_away, station_id
+    """
+    with _driver() as driver:
+        with driver.session() as session:
+            result = session.run(query, delayed_station_id=delayed_station_id)
+            affected_stations = []
+            for record in result:
+                affected_stations.append({
+                    "station_id": record["station_id"],
+                    "name": record["name"],
+                    "hops_away": record["hops_away"],
+                    "lines_affected": record["lines_affected"]
+                })
+            return affected_stations
 
 
 # ── STATION CONNECTIONS ───────────────────────────────────────────────────────
