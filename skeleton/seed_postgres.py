@@ -799,6 +799,41 @@ def seed_metro_travels(cur):
     )
 
 
+def seed_payments(cur):
+    data = load("payments.json")
+    # Insert base payment records first, then link to either national_rail or metro tables
+    base_rows = []
+    nr_links = []
+    metro_links = []
+
+    for item in data:
+        base_rows.append(
+            (
+                item["payment_id"],
+                _usd(item.get("amount_usd")),
+                item.get("method"),
+                item.get("status"),
+                item.get("paid_at"),
+            )
+        )
+
+        bid = item.get("booking_id")
+        if bid and bid.upper().startswith("BK"):
+            nr_links.append((item["payment_id"], bid))
+        elif bid and bid.upper().startswith("MT"):
+            metro_links.append((item["payment_id"], bid))
+
+    insert_many(
+        cur,
+        "payment_record",
+        ["payment_id", "amount_usd", "method", "status", "paid_at"],
+        base_rows,
+    )
+
+    if nr_links:
+        insert_many(cur, "national_rail_payment_record", ["payment_id", "booking_id"], nr_links)
+    if metro_links:
+        insert_many(cur, "metro_payment_record", ["payment_id", "trip_id"], metro_links)
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
