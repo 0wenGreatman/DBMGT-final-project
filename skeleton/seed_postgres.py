@@ -712,26 +712,49 @@ def seed_users(cur):
 
 def seed_national_rail_bookings(cur):
     data = load("bookings.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    pass
+    # Insert national rail bookings derived from bookings.json
+    rows = []
+    for item in data:
+        # Build the concrete departure id used as FK
+        departure_id = _departure_id(
+            item["schedule_id"], item["travel_date"], item["departure_time"]
+        )
+        rows.append(
+            (
+                item["booking_id"],
+                item["user_id"],
+                item["origin_station_id"],
+                item["destination_station_id"],
+                item["travel_date"],
+                departure_id,
+                item["ticket_type"],
+                _usd(item.get("amount_usd")),
+                item.get("status"),
+                item.get("booked_at"),
+                item.get("travelled_at"),
+            )
+        )
+
+    insert_many(
+        cur,
+        "national_rail_booking",
+        [
+            "booking_id",
+            "user_id",
+            "origin_station_id",
+            "destination_station_id",
+            "travel_date",
+            "departure_id",
+            "ticket_type_id",
+            "amount_usd",
+            "status",
+            "booked_at",
+            "travelled_at",
+        ],
+        rows,
+    )
 
 
-def seed_metro_travels(cur):
-    data = load("metro_travel_history.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    pass
-
-
-def seed_payments(cur):
-    data = load("payments.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    pass
-
-
-def seed_feedback(cur):
-    data = load("feedback.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    pass
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
