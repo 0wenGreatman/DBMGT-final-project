@@ -307,7 +307,74 @@ def query_alternative_routes(
     Returns:
         List of routes, each route is a list of leg dicts
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    # 1. Determine relationship types to traverse based on the network parameter
+    if network == "metro":
+        rel_types = "METRO_LINK"
+    elif network == "rail":
+        rel_types = "RAIL_LINK"
+    else:
+        # Infer network bounds based on station ID prefixes for 'auto' mode
+        if origin_id.startswith("MS") and destination_id.startswith("MS"):
+            rel_types = "METRO_LINK"
+        elif origin_id.startswith("NR") and destination_id.startswith("NR"):
+            rel_types = "RAIL_LINK"
+        else:
+            rel_types = "METRO_LINK|RAIL_LINK|INTERCHANGE"
+
+    # 2. Construct the Cypher query.
+    # We use variable-length pattern matching up to 15 hops, traversing undirected relationships.
+    # We explicitly filter out any path that contains the avoid_station_id.
+    query = f"""
+        MATCH path = (start {{station_id: $origin_id}})-[:{rel_types}*1..15]-(end {{station_id: $destination_id}})
+        WHERE NONE(n IN nodes(path) WHERE n.station_id = $avoid_station_id)
+        WITH path, nodes(path) AS stations, relationships(path) AS links
+        WITH stations, links, reduce(time = 0.0, r IN links | time + coalesce(r.travel_time_min, 5.0)) AS total_time_min
+        ORDER BY total_time_min ASC
+        LIMIT $max_routes
+        RETURN stations, links, total_time_min
+    """
+    
+    routes = []
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(
+                    query, 
+                    origin_id=origin_id, 
+                    destination_id=destination_id, 
+                    avoid_station_id=avoid_station_id,
+                    max_routes=max_routes
+                )
+                
+                # 3. Process each found path
+                for record in result:
+                    stations = record["stations"]
+                    links = record["links"]
+                    
+                    leg_list = []
+                    # Construct a leg dictionary for each relationship in the path
+                    for i, rel in enumerate(links):
+                        from_node = stations[i]
+                        to_node = stations[i+1]
+                        leg = {
+                            "from_station": from_node.get("station_name"),
+                            "to_station": to_node.get("station_name"),
+                            "line": rel.get("line_id", "Interchange"),
+                            "travel_time_min": rel.get("travel_time_min", 5.0),
+                            "type": rel.type
+                        }
+                        leg_list.append(leg)
+                    
+                    routes.append(leg_list)
+                    
+                if not routes:
+                    print(f"[Info] query_alternative_routes: No alternative routes found from '{origin_id}' to '{destination_id}' avoiding '{avoid_station_id}'.")
+                    
+                return routes
+    except Exception as e:
+        # Provide a fallback error handler to prevent the app from crashing on DB failure
+        print(f"[Error] query_alternative_routes failed for {origin_id} -> {destination_id} avoiding {avoid_station_id}: {e}")
+        return []
 
 
 # ── CROSS-NETWORK INTERCHANGE PATH ───────────────────────────────────────────
