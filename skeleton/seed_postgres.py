@@ -836,6 +836,42 @@ def seed_payments(cur):
         insert_many(cur, "metro_payment_record", ["payment_id", "trip_id"], metro_links)
 
 
+def seed_feedback(cur):
+    data = load("feedback.json")
+    base_rows = []
+    nr_links = []
+    metro_links = []
+
+    for item in data:
+        base_rows.append(
+            (
+                item["feedback_id"],
+                item.get("user_id"),
+                item.get("rating"),
+                item.get("comment"),
+                item.get("submitted_at"),
+            )
+        )
+
+        bid = item.get("booking_id")
+        if bid and bid.upper().startswith("BK"):
+            nr_links.append((item["feedback_id"], bid))
+        elif bid and bid.upper().startswith("MT"):
+            metro_links.append((item["feedback_id"], bid))
+
+    insert_many(
+        cur,
+        "feedback_base",
+        ["feedback_id", "user_id", "rating", "comment", "submitted_at"],
+        base_rows,
+    )
+
+    if nr_links:
+        insert_many(cur, "national_rail_feedback", ["feedback_id", "booking_id"], nr_links)
+    if metro_links:
+        insert_many(cur, "metro_feedback", ["feedback_id", "trip_id"], metro_links)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
