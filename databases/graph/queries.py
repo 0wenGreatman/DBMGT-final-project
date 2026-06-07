@@ -68,7 +68,86 @@ def query_shortest_route(
         dict with keys: found, origin_id, destination_id,
                         total_time_min, path (list of station dicts), legs
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    # Determine the allowed relationship types based on the requested network.
+    if network == "metro":
+        rel_types = "METRO_LINK"
+    elif network == "rail":
+        rel_types = "RAIL_LINK"
+    else:
+        # In 'auto' mode, infer the network from the station ID prefixes.
+        if origin_id.startswith("MS") and destination_id.startswith("MS"):
+            rel_types = "METRO_LINK"
+        elif origin_id.startswith("NR") and destination_id.startswith("NR"):
+            rel_types = "RAIL_LINK"
+        else:
+            # Fallback to allow both if IDs are mixed or format is unknown.
+            rel_types = "METRO_LINK|RAIL_LINK"
+
+    # Cypher query utilizing APOC Dijkstra algorithm for the shortest path
+    # weighted by the 'travel_time_min' property on relationships.
+    query = """
+        MATCH (start {station_id: $origin_id})
+        MATCH (end {station_id: $destination_id})
+        CALL apoc.algo.dijkstra(start, end, $rel_types, 'travel_time_min') YIELD path, weight
+        RETURN nodes(path) AS stations,
+               relationships(path) AS links,
+               weight AS total_time_min
+    """
+    
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(query, origin_id=origin_id, destination_id=destination_id, rel_types=rel_types)
+                record = result.single()
+                
+                if not record:
+                    print(f"[Info] query_shortest_route: No route found from '{origin_id}' to '{destination_id}'.")
+                    return {
+                        "found": False,
+                        "origin_id": origin_id,
+                        "destination_id": destination_id,
+                        "total_time_min": 0,
+                        "path": [],
+                        "legs": []
+                    }
+                
+                path_nodes = []
+                # Extract station details into a list of dictionaries
+                for node in record["stations"]:
+                    path_nodes.append({
+                        "station_id": node.get("station_id"),
+                        "name": node.get("station_name"),
+                        "lines": node.get("lines")
+                    })
+                
+                legs = []
+                # Extract leg details for each relationship in the path
+                for rel in record["links"]:
+                    legs.append({
+                        "line": rel.get("line_id"),
+                        "travel_time_min": rel.get("travel_time_min"),
+                        "type": rel.type
+                    })
+                    
+                return {
+                    "found": True,
+                    "origin_id": origin_id,
+                    "destination_id": destination_id,
+                    "total_time_min": record["total_time_min"],
+                    "path": path_nodes,
+                    "legs": legs
+                }
+    except Exception as e:
+        # Provide a fallback error handler to prevent the app from crashing on DB failure
+        print(f"[Error] query_shortest_route failed for {origin_id} -> {destination_id}: {e}")
+        return {
+            "found": False,
+            "origin_id": origin_id,
+            "destination_id": destination_id,
+            "total_time_min": 0,
+            "path": [],
+            "legs": []
+        }
 
 
 # ── CHEAPEST ROUTE (Dijkstra by fare) ────────────────────────────────────────
