@@ -755,6 +755,50 @@ def seed_national_rail_bookings(cur):
     )
 
 
+def seed_metro_travels(cur):
+    data = load("metro_travel_history.json")
+    rows = []
+    for item in data:
+        rows.append(
+            (
+                item.get("trip_id"),
+                item.get("user_id"),
+                item.get("schedule_id"),
+                item.get("origin_station_id"),
+                item.get("destination_station_id"),
+                item.get("travel_date"),
+                item.get("ticket_type"),
+                item.get("day_pass_ref"),
+                item.get("stops_travelled"),
+                _usd(item.get("amount_usd")),
+                item.get("status"),
+                item.get("purchased_at"),
+                item.get("travelled_at"),
+            )
+        )
+
+    insert_many(
+        cur,
+        "metro_booking",
+        [
+            "trip_id",
+            "user_id",
+            "schedule_id",
+            "origin_station_id",
+            "destination_station_id",
+            "travel_date",
+            "ticket_type_id",
+            "day_pass_ref",
+            "stops_travelled",
+            "amount_usd",
+            "status",
+            "purchased_at",
+            "travelled_at",
+        ],
+        rows,
+    )
+
+
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
