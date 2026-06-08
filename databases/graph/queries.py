@@ -170,7 +170,7 @@ def query_cheapest_route(
     Returns:
         dict with found, total_fare_usd (approximate), stations, legs
     """
-    # 1. Determine relationship types to traverse based on the network parameter.
+    # Determine relationship types to traverse based on the network parameter.
     if network == "metro":
         rel_types = "METRO_LINK"
     elif network == "rail":
@@ -190,7 +190,7 @@ def query_cheapest_route(
     # since fares scale linearly with the number of stops.
     weight_prop = "fare_first" if fare_class.lower() == "first" else "fare_standard"
 
-    # 2. Cypher query utilizing APOC Dijkstra algorithm for the cheapest path.
+    # Cypher query utilizing APOC Dijkstra algorithm for the cheapest path.
     query = """
         MATCH (start {station_id: $origin_id})
         MATCH (end {station_id: $destination_id})
@@ -249,7 +249,7 @@ def query_cheapest_route(
                     elif rel_type == "RAIL_LINK":
                         rail_hops += 1
 
-                # 3. Calculate exact total estimated fare based on the mock data rules.
+                # Calculate exact total estimated fare based on the mock data rules.
                 # Metro formula: $0.80 base + $0.30 per stop
                 # Rail Standard formula: $2.50 base + $1.50 per stop
                 # Rail First Class formula: $4.00 base + $2.50 per stop
@@ -307,7 +307,7 @@ def query_alternative_routes(
     Returns:
         List of routes, each route is a list of leg dicts
     """
-    # 1. Determine relationship types to traverse based on the network parameter
+    # Determine relationship types to traverse based on the network parameter
     if network == "metro":
         rel_types = "METRO_LINK"
     elif network == "rail":
@@ -321,9 +321,9 @@ def query_alternative_routes(
         else:
             rel_types = "METRO_LINK|RAIL_LINK|INTERCHANGE"
 
-    # 2. Construct the Cypher query.
-    # We use variable-length pattern matching up to 15 hops, traversing undirected relationships.
-    # We explicitly filter out any path that contains the avoid_station_id.
+    # Construct the Cypher query.
+    # Use variable-length pattern matching up to 15 hops, traversing undirected relationships.
+    # Explicitly filter out any path that contains the avoid_station_id.
     query = f"""
         MATCH path = (start {{station_id: $origin_id}})-[:{rel_types}*1..15]-(end {{station_id: $destination_id}})
         WHERE NONE(n IN nodes(path) WHERE n.station_id = $avoid_station_id)
@@ -346,7 +346,7 @@ def query_alternative_routes(
                     max_routes=max_routes
                 )
                 
-                # 3. Process each found path
+                # Process each found path
                 for record in result:
                     stations = record["stations"]
                     links = record["links"]
