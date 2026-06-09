@@ -394,7 +394,7 @@ def seed_metro_schedules(cur):
         cur,
         "fare_rules",
         [
-            "fare_rule_id",
+            "fare_rule_code",
             "network_id",
             "schedule_id",
             "ticket_type_id",
@@ -527,7 +527,7 @@ def seed_national_rail_schedules(cur):
         cur,
         "fare_rules",
         [
-            "fare_rule_id",
+            "fare_rule_code",
             "network_id",
             "schedule_id",
             "ticket_type_id",
@@ -590,32 +590,33 @@ def seed_seat_layouts(cur):
     insert_many(
         cur,
         "seat_layouts",
-        ["layout_id", "schedule_id"],
+        ["layout_code", "schedule_id"],
         layout_rows,
     )
+
+    cur.execute("SELECT seat_layout_pk, layout_code FROM seat_layouts")
+    layout_pk_by_code = {layout_code: row_id for row_id, layout_code in cur.fetchall()}
 
     coach_rows = []
     seat_rows = []
     for item in data:
-        layout_id = item["layout_id"]
+        layout_code = item["layout_id"]
+        layout_pk = layout_pk_by_code[layout_code]
         for coach in item.get("coaches", []):
             coach_code = coach["coach"]
-            coach_id = f"{layout_id}_{coach_code}"
             coach_rows.append(
                 (
-                    coach_id,
-                    layout_id,
+                    layout_pk,
                     coach_code,
                     coach["fare_class"],
                 )
             )
 
-            # seat_pk is globally stable even though seat_id is coach-local.
             for seat in coach.get("seats", []):
                 seat_rows.append(
                     (
-                        f"{coach_id}_{seat['seat_id']}",
-                        coach_id,
+                        layout_code,
+                        coach_code,
                         seat["seat_id"],
                         seat.get("row"),
                         seat.get("column"),
@@ -625,27 +626,57 @@ def seed_seat_layouts(cur):
     insert_many(
         cur,
         "coaches",
-        ["coach_id", "layout_id", "coach_code", "fare_class_id"],
+        ["seat_layout_pk", "coach_code", "fare_class_id"],
         coach_rows,
     )
+
+    cur.execute(
+        """
+        SELECT c.coach_pk, sl.layout_code, c.coach_code
+        FROM coaches c
+        JOIN seat_layouts sl
+            ON sl.seat_layout_pk = c.seat_layout_pk
+        """
+    )
+    coach_pk_by_layout_and_code = {
+        (layout_code, coach_code): coach_pk
+        for coach_pk, layout_code, coach_code in cur.fetchall()
+    }
+
+    seat_rows = [
+        (
+            coach_pk_by_layout_and_code[(layout_code, coach_code)],
+            seat_code,
+            seat_row,
+            seat_column,
+        )
+        for layout_code, coach_code, seat_code, seat_row, seat_column in seat_rows
+    ]
     insert_many(
         cur,
         "seats",
-        ["seat_pk", "coach_id", "seat_code", "seat_row", "seat_column"],
+        ["coach_pk", "seat_code", "seat_row", "seat_column"],
         seat_rows,
     )
 
 
 def seed_seat_reservations(cur):
     data = load("bookings.json")
-    layouts = load("national_rail_seat_layouts.json")
     schedules = load("national_rail_schedules.json")
 
-    # Seat rows use layout_id + coach + seat_id, so map each schedule to its
-    # assigned layout before building the reservation seat FK.
-    layout_by_schedule = {
-        item["schedule_id"]: item["layout_id"]
-        for item in layouts
+    cur.execute(
+        """
+        SELECT s.seat_pk, sl.schedule_id, c.coach_code, s.seat_code
+        FROM seats s
+        JOIN coaches c
+            ON c.coach_pk = s.coach_pk
+        JOIN seat_layouts sl
+            ON sl.seat_layout_pk = c.seat_layout_pk
+        """
+    )
+    seat_pk_by_schedule_coach_and_code = {
+        (schedule_id, coach_code, seat_code): seat_pk
+        for seat_pk, schedule_id, coach_code, seat_code in cur.fetchall()
     }
 
     # The reservation table stores stop sequence numbers for the booked segment.
@@ -662,11 +693,8 @@ def seed_seat_reservations(cur):
     for item in data:
         booking_id = item["booking_id"]
         schedule_id = item["schedule_id"]
-        layout_id = layout_by_schedule.get(schedule_id)
         stop_sequences = stop_sequence_by_schedule.get(schedule_id)
 
-        if not layout_id:
-            raise ValueError(f"No seat layout found for schedule {schedule_id}")
         if not stop_sequences:
             raise ValueError(f"No stop sequence found for schedule {schedule_id}")
 
@@ -680,12 +708,17 @@ def seed_seat_reservations(cur):
                 f"Booking {booking_id} has stations outside schedule {schedule_id}"
             )
 
-        coach_id = f"{layout_id}_{item['coach']}"
-        seat_pk = f"{coach_id}_{item['seat_id']}"
+        seat_pk = seat_pk_by_schedule_coach_and_code.get(
+            (schedule_id, item["coach"], item["seat_id"])
+        )
+        if seat_pk is None:
+            raise ValueError(
+                f"No seat found for booking {booking_id}: "
+                f"{schedule_id}/{item['coach']}/{item['seat_id']}"
+            )
 
         reservation_rows.append(
             (
-                f"SR_{booking_id}",
                 _departure_id(
                     schedule_id,
                     item["travel_date"],
@@ -706,7 +739,6 @@ def seed_seat_reservations(cur):
         cur,
         "seat_reservations",
         [
-            "seat_reservation_id",
             "departure_id",
             "seat_pk",
             "booking_id",

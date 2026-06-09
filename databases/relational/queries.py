@@ -226,10 +226,10 @@ def query_national_rail_availability(
                 COUNT(DISTINCT sr.seat_pk)::int AS reserved_seats
             FROM seat_layouts sl
             JOIN coaches co
-                ON co.layout_id = sl.layout_id
+                ON co.seat_layout_pk = sl.seat_layout_pk
                AND co.is_active = TRUE
             JOIN seats s
-                ON s.coach_id = co.coach_id
+                ON s.coach_pk = co.coach_pk
                AND s.is_active = TRUE
             LEFT JOIN seat_reservations sr
                 ON sr.departure_id = departure_info.departure_id
@@ -281,7 +281,7 @@ def query_national_rail_fare(
 
     sql = """
         SELECT
-            fare_rule_id,
+            fare_rule_code AS fare_rule_id,
             fare_class_id AS fare_class,
             base_fare_usd,
             per_stop_rate_usd,
@@ -427,7 +427,7 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
 
     sql = """
         SELECT
-            fare_rule_id,
+            fare_rule_code AS fare_rule_id,
             base_fare_usd,
             per_stop_rate_usd,
             currency
@@ -479,7 +479,6 @@ def query_available_seats(
     sql = """
         SELECT
             s.seat_code AS seat_id,
-            s.seat_pk,
             c.coach_code AS coach,
             s.seat_row AS row,
             s.seat_column AS column,
@@ -499,11 +498,11 @@ def query_available_seats(
             LIMIT 1
         ) cd ON TRUE
         JOIN coaches c
-            ON c.layout_id = sl.layout_id
+            ON c.seat_layout_pk = sl.seat_layout_pk
            AND c.fare_class_id = %s
            AND c.is_active = TRUE
         JOIN seats s
-            ON s.coach_id = c.coach_id
+            ON s.coach_pk = c.coach_pk
            AND s.is_active = TRUE
         LEFT JOIN seat_reservations sr
             ON sr.departure_id = cd.departure_id
@@ -514,7 +513,7 @@ def query_available_seats(
                 OR sr.held_until IS NULL
                 OR sr.held_until > CURRENT_TIMESTAMP
            )
-        WHERE sr.seat_reservation_id IS NULL
+        WHERE sr.seat_reservation_pk IS NULL
           AND sl.schedule_id = %s
           AND sl.is_active = TRUE
         ORDER BY c.coach_code, s.seat_row, s.seat_column, s.seat_code;

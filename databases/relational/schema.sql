@@ -105,23 +105,26 @@ CREATE INDEX idx_login_logs_user_time ON login_logs(user_profile_id, login_at DE
 -- Two supported transit networks:
 -- M = metro, N = national rail.
 CREATE TABLE IF NOT EXISTS networks (
-    network_id CHAR(1) PRIMARY KEY,
+    network_pk SERIAL PRIMARY KEY, -- Surrogate key for compact joins; network_id remains the stable M/N business code.
+    network_id CHAR(1) UNIQUE NOT NULL,
     network_display_name VARCHAR(100) NOT NULL,
     CHECK (network_id IN ('M', 'N'))
 );
 
 -- One row per physical station in either network.
 CREATE TABLE IF NOT EXISTS stations (
-    station_id VARCHAR(10) PRIMARY KEY,
-    network_id CHAR(1) NOT NULL REFERENCES networks (network_id),
+    station_pk SERIAL PRIMARY KEY, -- Surrogate key avoids using mutable station codes as row identity.
+    station_id VARCHAR(10) UNIQUE NOT NULL,
+    network_id CHAR(1) NOT NULL REFERENCES networks (network_id) ON DELETE RESTRICT,
     station_name VARCHAR(100) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 -- One row per route/line, such as M1 or NR1.
 CREATE TABLE IF NOT EXISTS lines (
-    line_id VARCHAR(10) PRIMARY KEY,
-    network_id CHAR(1) NOT NULL REFERENCES networks (network_id),
+    line_pk SERIAL PRIMARY KEY, -- Surrogate key keeps route joins compact; line_id remains the readable route code.
+    line_id VARCHAR(10) UNIQUE NOT NULL,
+    network_id CHAR(1) NOT NULL REFERENCES networks (network_id) ON DELETE RESTRICT,
     line_name VARCHAR(100) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
@@ -129,9 +132,10 @@ CREATE TABLE IF NOT EXISTS lines (
 -- Actual station-line memberships.
 -- Do not derive this by joining stations and lines on network_id only.
 CREATE TABLE IF NOT EXISTS station_lines (
-    station_id VARCHAR(10) NOT NULL REFERENCES stations (station_id),
-    line_id VARCHAR(10) NOT NULL REFERENCES lines (line_id),
-    PRIMARY KEY (station_id, line_id)
+    station_line_pk SERIAL PRIMARY KEY, -- Surrogate key identifies the membership row; the station-line pair stays unique.
+    station_id VARCHAR(10) NOT NULL REFERENCES stations (station_id) ON DELETE CASCADE,
+    line_id VARCHAR(10) NOT NULL REFERENCES lines (line_id) ON DELETE CASCADE,
+    UNIQUE (station_id, line_id)
 );
 
 -- ============================================================
@@ -140,7 +144,8 @@ CREATE TABLE IF NOT EXISTS station_lines (
 
 -- Timetable header for one service pattern on a line.
 CREATE TABLE IF NOT EXISTS schedule_services (
-    schedule_id            VARCHAR(20) PRIMARY KEY,
+    schedule_service_pk    SERIAL PRIMARY KEY, -- Surrogate key separates timetable row identity from public schedule code.
+    schedule_id            VARCHAR(20) UNIQUE NOT NULL,
     line_id                VARCHAR(10) NOT NULL,
 
     service_type           VARCHAR(30) NOT NULL, -- e.g. 'normal', 'express', 'metro'
@@ -159,20 +164,25 @@ CREATE TABLE IF NOT EXISTS schedule_services (
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (line_id)
-        REFERENCES lines(line_id),
+        REFERENCES lines(line_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (origin_station_id)
-        REFERENCES stations(station_id),
+        REFERENCES stations(station_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (destination_station_id)
-        REFERENCES stations(station_id),
+        REFERENCES stations(station_id)
+        ON DELETE RESTRICT,
 
     -- Origin and destination must be valid stations on this line.
     FOREIGN KEY (origin_station_id, line_id)
-        REFERENCES station_lines(station_id, line_id),
+        REFERENCES station_lines(station_id, line_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (destination_station_id, line_id)
-        REFERENCES station_lines(station_id, line_id),
+        REFERENCES station_lines(station_id, line_id)
+        ON DELETE RESTRICT,
 
     UNIQUE (schedule_id, line_id),
   
@@ -185,6 +195,7 @@ CREATE TABLE IF NOT EXISTS schedule_services (
 -- Ordered stop list for each timetable.
 -- line_id is included so each stop can be checked against station_lines.
 CREATE TABLE IF NOT EXISTS schedule_stops (
+    schedule_stop_pk            SERIAL PRIMARY KEY, -- Surrogate key identifies each stop row while preserving ordered uniqueness below.
     schedule_id                 VARCHAR(20) NOT NULL,
     line_id                     VARCHAR(10) NOT NULL,
     station_id                  VARCHAR(10) NOT NULL,
@@ -198,7 +209,7 @@ CREATE TABLE IF NOT EXISTS schedule_stops (
 
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (schedule_id, stop_sequence),
+    UNIQUE (schedule_id, stop_sequence),
     UNIQUE (schedule_id, station_id),
 
     FOREIGN KEY (schedule_id)
@@ -211,11 +222,13 @@ CREATE TABLE IF NOT EXISTS schedule_stops (
         ON DELETE CASCADE,
 
     FOREIGN KEY (station_id)
-        REFERENCES stations(station_id),
+        REFERENCES stations(station_id)
+        ON DELETE RESTRICT,
 
     -- Prevents a schedule from stopping at a station outside its line.
     FOREIGN KEY (station_id, line_id)
-        REFERENCES station_lines(station_id, line_id),
+        REFERENCES station_lines(station_id, line_id)
+        ON DELETE RESTRICT,
 
     CHECK (stop_sequence > 0),
     CHECK (
@@ -226,9 +239,10 @@ CREATE TABLE IF NOT EXISTS schedule_stops (
 
 -- Days of week on which a schedule operates.
 CREATE TABLE IF NOT EXISTS schedule_operating_days (
+    schedule_operating_day_pk SERIAL PRIMARY KEY, -- Surrogate key for the operating-day row; schedule/day remains unique.
     schedule_id VARCHAR(20) NOT NULL,
     day_of_week VARCHAR(10) NOT NULL,
-    PRIMARY KEY (schedule_id, day_of_week),
+    UNIQUE (schedule_id, day_of_week),
     FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id) ON DELETE CASCADE,
     CHECK (
         day_of_week IN (
@@ -245,14 +259,15 @@ CREATE TABLE IF NOT EXISTS schedule_operating_days (
 
 -- Concrete train departures generated from a schedule for a service date.
 CREATE TABLE IF NOT EXISTS service_departures (
-    departure_id VARCHAR(30) PRIMARY KEY,
+    service_departure_pk BIGSERIAL PRIMARY KEY, -- BIGSERIAL supports many concrete departures while departure_id remains a stable reference.
+    departure_id VARCHAR(30) UNIQUE NOT NULL,
     schedule_id VARCHAR(20) NOT NULL,
     service_date DATE NOT NULL,
     departure_time TIME NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'scheduled',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id),
+    FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id) ON DELETE RESTRICT,
     UNIQUE (
         schedule_id,
         service_date,
@@ -273,7 +288,8 @@ CREATE TABLE IF NOT EXISTS service_departures (
 
 -- Ticket type master data, such as single, return, and day_pass.
 CREATE TABLE IF NOT EXISTS ticket_types (
-    ticket_type_id VARCHAR(20) PRIMARY KEY,
+    ticket_type_pk SERIAL PRIMARY KEY, -- Surrogate key for ticket joins; ticket_type_id remains the stable business code.
+    ticket_type_id VARCHAR(20) UNIQUE NOT NULL,
     display_name VARCHAR(100) NOT NULL,
     description TEXT,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -284,6 +300,7 @@ CREATE TABLE IF NOT EXISTS ticket_types (
 -- Defines which networks each ticket type can be used on.
 -- M = metro, N = national rail.
 CREATE TABLE IF NOT EXISTS ticket_type_networks (
+    ticket_type_network_pk SERIAL PRIMARY KEY, -- Surrogate key identifies the availability row; ticket/network pair remains unique.
     ticket_type_id VARCHAR(20) NOT NULL,
     network_id CHAR(1) NOT NULL,
     seat_assignment BOOLEAN NOT NULL DEFAULT FALSE,
@@ -293,9 +310,9 @@ CREATE TABLE IF NOT EXISTS ticket_type_networks (
     change_fee_usd DECIMAL(10, 2),
     refundable BOOLEAN NOT NULL DEFAULT FALSE,
     notes TEXT,
-    PRIMARY KEY (ticket_type_id, network_id),
+    UNIQUE (ticket_type_id, network_id),
     FOREIGN KEY (ticket_type_id) REFERENCES ticket_types (ticket_type_id) ON DELETE CASCADE,
-    FOREIGN KEY (network_id) REFERENCES networks (network_id),
+    FOREIGN KEY (network_id) REFERENCES networks (network_id) ON DELETE RESTRICT,
     CHECK (network_id IN ('M', 'N')),
     CHECK (
         advance_purchase_max_days IS NULL
@@ -309,18 +326,21 @@ CREATE TABLE IF NOT EXISTS ticket_type_networks (
 
 -- Fare or seat classes, such as general, standard, and first.
 CREATE TABLE IF NOT EXISTS fare_classes (
-    fare_class_id VARCHAR(20) PRIMARY KEY,
+    fare_class_pk SERIAL PRIMARY KEY, -- Surrogate key separates row identity from fare-class code.
+    fare_class_id VARCHAR(20) NOT NULL,
     network_id CHAR(1) NOT NULL,
     class_display_name VARCHAR(100) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    FOREIGN KEY (network_id) REFERENCES networks (network_id),
+    FOREIGN KEY (network_id) REFERENCES networks (network_id) ON DELETE RESTRICT,
+    UNIQUE (fare_class_id),
     UNIQUE (fare_class_id, network_id),
     CHECK (network_id IN ('M', 'N'))
 );
 
 -- Pricing rules. Monetary values use DECIMAL USD values, not FLOAT.
 CREATE TABLE IF NOT EXISTS fare_rules (
-    fare_rule_id VARCHAR(30) PRIMARY KEY,
+    fare_rule_pk SERIAL PRIMARY KEY, -- Surrogate key keeps joins compact; fare_rule_code preserves the stable seed identifier.
+    fare_rule_code VARCHAR(30) NOT NULL UNIQUE,
 
     network_id CHAR(1) NOT NULL,
     schedule_id VARCHAR(20),
@@ -349,21 +369,26 @@ CREATE TABLE IF NOT EXISTS fare_rules (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (network_id)
-        REFERENCES networks(network_id),
+        REFERENCES networks(network_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (schedule_id)
-        REFERENCES schedule_services(schedule_id),
+        REFERENCES schedule_services(schedule_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (ticket_type_id)
-        REFERENCES ticket_types(ticket_type_id),
+        REFERENCES ticket_types(ticket_type_id)
+        ON DELETE RESTRICT,
 
     -- Ensures the ticket type is actually available on this network.
     FOREIGN KEY (ticket_type_id, network_id)
-        REFERENCES ticket_type_networks(ticket_type_id, network_id),
+        REFERENCES ticket_type_networks(ticket_type_id, network_id)
+        ON DELETE RESTRICT,
 
     -- Ensures the fare class belongs to the same network when present.
     FOREIGN KEY (fare_class_id, network_id)
-        REFERENCES fare_classes(fare_class_id, network_id),
+        REFERENCES fare_classes(fare_class_id, network_id)
+        ON DELETE RESTRICT,
 
     CHECK (network_id IN ('M', 'N')),
     CHECK (
@@ -441,36 +466,35 @@ CREATE TABLE IF NOT EXISTS fare_rules (
 
 -- Seat layout assigned to a national rail schedule.
 CREATE TABLE IF NOT EXISTS seat_layouts (
-    layout_id VARCHAR(20) PRIMARY KEY,
+    seat_layout_pk SERIAL PRIMARY KEY, -- Surrogate key for seat-layout joins; layout_code preserves the mock-data identifier.
+    layout_code VARCHAR(20) NOT NULL UNIQUE,
     schedule_id VARCHAR(20) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id),
+    FOREIGN KEY (schedule_id) REFERENCES schedule_services (schedule_id) ON DELETE CASCADE,
     UNIQUE (schedule_id)
 );
 
 -- Coaches inside one seat layout, such as coach A or B.
 CREATE TABLE IF NOT EXISTS coaches (
-    -- Seeded as layout_id + coach_code for simplicity.
-    coach_id VARCHAR(30) PRIMARY KEY,
-    layout_id VARCHAR(20) NOT NULL,
+    coach_pk SERIAL PRIMARY KEY, -- Surrogate key is compact because coach codes are only unique within a layout.
+    seat_layout_pk INTEGER NOT NULL,
     coach_code VARCHAR(10) NOT NULL,
     fare_class_id VARCHAR(20) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (layout_id) REFERENCES seat_layouts (layout_id) ON DELETE CASCADE,
-    FOREIGN KEY (fare_class_id) REFERENCES fare_classes (fare_class_id),
-    UNIQUE (layout_id, coach_code)
+    FOREIGN KEY (seat_layout_pk) REFERENCES seat_layouts (seat_layout_pk) ON DELETE CASCADE,
+    FOREIGN KEY (fare_class_id) REFERENCES fare_classes (fare_class_id) ON DELETE RESTRICT,
+    UNIQUE (seat_layout_pk, coach_code)
 );
 
 -- Physical seats inside a coach. seat_code is only unique within a coach.
 CREATE TABLE IF NOT EXISTS seats (
-    -- Seeded as coach_id + seat_code for simplicity.
-    seat_pk VARCHAR(40) PRIMARY KEY,
+    seat_pk SERIAL PRIMARY KEY, -- Surrogate key lets reservations reference seats without storing generated text IDs.
 
-    coach_id VARCHAR(30) NOT NULL,
+    coach_pk INTEGER NOT NULL,
 
     -- e.g. "1A", "2B"; not globally unique.
     seat_code VARCHAR(10) NOT NULL,
@@ -482,12 +506,12 @@ CREATE TABLE IF NOT EXISTS seats (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (coach_id)
-        REFERENCES coaches(coach_id)
+    FOREIGN KEY (coach_pk)
+        REFERENCES coaches(coach_pk)
         ON DELETE CASCADE,
 
     -- Ensures no duplicate seat codes within the same coach.
-    UNIQUE (coach_id, seat_code),
+    UNIQUE (coach_pk, seat_code),
 
     CHECK (
         seat_row IS NULL
@@ -497,10 +521,10 @@ CREATE TABLE IF NOT EXISTS seats (
 
 -- Seat reservations for a concrete departure and travel segment.
 CREATE TABLE IF NOT EXISTS seat_reservations (
-    seat_reservation_id VARCHAR(30) PRIMARY KEY,
+    seat_reservation_pk UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- UUID suits runtime-created reservation rows and avoids predictable identifiers.
 
     departure_id VARCHAR(30) NOT NULL,
-    seat_pk VARCHAR(40) NOT NULL,
+    seat_pk INTEGER NOT NULL,
     booking_id VARCHAR(30) NOT NULL,
 
     origin_station_id VARCHAR(10) NOT NULL,
@@ -517,20 +541,24 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (departure_id)
-        REFERENCES service_departures(departure_id),
+        REFERENCES service_departures(departure_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (seat_pk)
-        REFERENCES seats(seat_pk),
+        REFERENCES seats(seat_pk)
+        ON DELETE RESTRICT,
 
     -- Future FK after national_rail_booking is created:
     -- FOREIGN KEY (booking_id)
     --     REFERENCES national_rail_booking(booking_id),
 
     FOREIGN KEY (origin_station_id)
-        REFERENCES stations(station_id),
+        REFERENCES stations(station_id)
+        ON DELETE RESTRICT,
 
     FOREIGN KEY (destination_station_id)
-        REFERENCES stations(station_id),
+        REFERENCES stations(station_id)
+        ON DELETE RESTRICT,
 
     CHECK (reservation_status IN (
         'held',
