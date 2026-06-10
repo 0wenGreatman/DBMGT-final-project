@@ -31,12 +31,17 @@
 -- Ensure UUID generation functions are available in older PostgreSQL versions
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- ============================================================
+--  USER DATA
+-- ============================================================
+
 -- Table: user_profiles
 -- Stores the primary contact information and lifecycle state for users.
 CREATE TABLE user_profiles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Serves as the surrogate primary key for underlying database relations.
     user_id VARCHAR(50) UNIQUE NOT NULL,            -- Acts as the business identifier for frontend display and external services (e.g., RU01).
-    full_name VARCHAR(100) NOT NULL,                -- User's full legal name.
+    first_name VARCHAR(50) NOT NULL,                -- User's first name.
+    surname VARCHAR(50) NOT NULL,                   -- User's surname.
     email VARCHAR(255) UNIQUE NOT NULL,             -- Potential login identification.
     phone VARCHAR(50) NOT NULL,                     
     date_of_birth DATE NOT NULL,                    
