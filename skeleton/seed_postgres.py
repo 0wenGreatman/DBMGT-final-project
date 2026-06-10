@@ -871,7 +871,7 @@ def seed_national_rail_bookings(cur):
             "origin_station_pk",
             "destination_station_pk",
             "travel_date",
-            "departure_pk",
+            "service_departure_pk",
             "ticket_type_pk",
             "amount_usd",
             "status",
@@ -979,29 +979,42 @@ def seed_payments(cur):
     )
 
     payment_map = _fetch_map(cur, "payment_record", "payment_id", "payment_pk")
+    booking_map = _fetch_map(cur, "national_rail_booking", "booking_id", "booking_pk")
+    trip_map = _fetch_map(cur, "metro_booking", "trip_id", "trip_pk")
 
     nr_rows = []
     metro_rows = []
+    metro_payment_by_trip_ref = {}
     for item in data:
         payment_pk = payment_map[item["payment_id"]]
         booking_ref = item.get("booking_id")
         if booking_ref and booking_ref.upper().startswith("BK"):
-            nr_rows.append((payment_pk, item["payment_id"], booking_ref))
+            nr_rows.append((payment_pk, booking_map[booking_ref]))
         elif booking_ref and booking_ref.upper().startswith("MT"):
-            metro_rows.append((payment_pk, item["payment_id"], booking_ref))
+            metro_rows.append((payment_pk, trip_map[booking_ref]))
+            metro_payment_by_trip_ref[booking_ref] = payment_pk
+
+    # A day-pass purchase pays for its later zero-cost trips as well, so those
+    # trips share the parent's payment association.
+    for trip in load("metro_travel_history.json"):
+        day_pass_ref = trip.get("day_pass_ref")
+        if day_pass_ref and day_pass_ref in metro_payment_by_trip_ref:
+            metro_rows.append(
+                (metro_payment_by_trip_ref[day_pass_ref], trip_map[trip["trip_id"]])
+            )
 
     if nr_rows:
         insert_many(
             cur,
             "national_rail_payment_record",
-            ["payment_pk", "payment_id", "booking_id"],
+            ["payment_pk", "booking_pk"],
             nr_rows,
         )
     if metro_rows:
         insert_many(
             cur,
             "metro_payment_record",
-            ["payment_pk", "payment_id", "trip_id"],
+            ["payment_pk", "trip_pk"],
             metro_rows,
         )
 
@@ -1029,6 +1042,8 @@ def seed_feedback(cur):
     )
 
     feedback_map = _fetch_map(cur, "feedback_base", "feedback_id", "feedback_pk")
+    booking_map = _fetch_map(cur, "national_rail_booking", "booking_id", "booking_pk")
+    trip_map = _fetch_map(cur, "metro_booking", "trip_id", "trip_pk")
 
     nr_rows = []
     metro_rows = []
@@ -1036,22 +1051,22 @@ def seed_feedback(cur):
         feedback_pk = feedback_map[item["feedback_id"]]
         booking_ref = item.get("booking_id")
         if booking_ref and booking_ref.upper().startswith("BK"):
-            nr_rows.append((feedback_pk, item["feedback_id"], booking_ref))
+            nr_rows.append((feedback_pk, booking_map[booking_ref]))
         elif booking_ref and booking_ref.upper().startswith("MT"):
-            metro_rows.append((feedback_pk, item["feedback_id"], booking_ref))
+            metro_rows.append((feedback_pk, trip_map[booking_ref]))
 
     if nr_rows:
         insert_many(
             cur,
             "national_rail_feedback",
-            ["feedback_pk", "feedback_id", "booking_id"],
+            ["feedback_pk", "booking_pk"],
             nr_rows,
         )
     if metro_rows:
         insert_many(
             cur,
             "metro_feedback",
-            ["feedback_pk", "feedback_id", "trip_id"],
+            ["feedback_pk", "trip_pk"],
             metro_rows,
         )
 # ── main ─────────────────────────────────────────────────────────────────────
