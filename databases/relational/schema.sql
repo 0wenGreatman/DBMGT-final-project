@@ -576,7 +576,7 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
 
 -- Bookings and travel history for National Rail. 
 CREATE TABLE national_rail_booking (
-    booking_id BIGSERIAL PRIMARY KEY, -- Surrogate key for booking identity; booking_id remains the stable reference for external use.
+    booking_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for booking identity; booking_id remains the stable reference for external use.
     booking_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the booking, used in external references and user display.
     user_id VARCHAR(20) NOT NULL,
     origin_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the origin station of the trip.
@@ -590,19 +590,24 @@ CREATE TABLE national_rail_booking (
     travelled_at TIMESTAMPTZ,
     
     FOREIGN KEY (user_id)
-        REFERENCES user_profiles(user_id),
+        REFERENCES user_profiles(user_id)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a user is deleted to preserve historical data.
     FOREIGN KEY (origin_station_pk)
-        REFERENCES stations(station_pk),
+        REFERENCES stations(station_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a station is deleted to preserve historical data, but the station can be deactivated instead.
     FOREIGN KEY (destination_station_pk)
-        REFERENCES stations(station_pk),
+        REFERENCES stations(station_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a station is deleted to preserve historical data, but the station can be deactivated instead.
     FOREIGN KEY (service_departure_pk)
-        REFERENCES service_departures(service_departure_pk),
+        REFERENCES service_departures(service_departure_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a departure is deleted to preserve historical data, but the departure can be cancelled instead.
     FOREIGN KEY (ticket_type_pk)
-        REFERENCES ticket_types(ticket_type_pk),
+        REFERENCES ticket_types(ticket_type_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a ticket type is deleted to preserve historical data, but the ticket type can be deactivated instead.
         
     CHECK (status IN ('confirmed', 'completed', 'cancelled')),
     CHECK (amount_usd > 0),
-    CHECK (travel_date IS NOT NULL),
+    CHECK (origin_station_pk <> destination_station_pk), -- Origin and destination cannot be the same station.
     CHECK (travelled_at IS NULL OR status = 'completed')
 );
 
@@ -624,21 +629,27 @@ CREATE TABLE metro_booking (
     travelled_at TIMESTAMPTZ,
     
     FOREIGN KEY (user_id)
-        REFERENCES user_profiles(user_id),
+        REFERENCES user_profiles(user_id)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a user is deleted to preserve historical data.
     FOREIGN KEY (schedule_service_pk)
-        REFERENCES schedule_services(schedule_service_pk),
+        REFERENCES schedule_services(schedule_service_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a schedule service is deleted to preserve historical data, but the service can be deactivated instead.
     FOREIGN KEY (origin_station_pk)
-        REFERENCES stations(station_pk),
+        REFERENCES stations(station_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a station is deleted to preserve historical data, but the station can be deactivated instead.
     FOREIGN KEY (destination_station_pk)
-        REFERENCES stations(station_pk),
+        REFERENCES stations(station_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a station is deleted to preserve historical data, but the station can be deactivated instead.
     FOREIGN KEY (ticket_type_pk)
-        REFERENCES ticket_types(ticket_type_pk),
+        REFERENCES ticket_types(ticket_type_pk)
+        ON DELETE RESTRICT, -- Bookings should not be deleted when a ticket type is deleted to preserve historical data, but the ticket type can be deactivated instead.
     FOREIGN KEY (day_pass_ref)
-        REFERENCES metro_booking(trip_id),
+        REFERENCES metro_booking(trip_id) 
+        ON DELETE RESTRICT, -- Subsequent trips should not be deleted when the original day pass trip is deleted to preserve historical data, but the day pass trip can be cancelled instead.
         
     CHECK (status IN ('completed', 'cancelled')),
     CHECK (amount_usd >= 0),
-    CHECK (travel_date IS NOT NULL),
+    CHECK (origin_station_pk <> destination_station_pk), -- Origin and destination cannot be the same station.
     CHECK (travelled_at IS NULL OR status = 'completed'),
     CHECK (stops_travelled IS NULL OR stops_travelled > 0),
     CHECK (day_pass_ref IS NULL OR amount_usd = 0)
@@ -665,26 +676,31 @@ CREATE TABLE payment_record (
 
 -- Linking payments to the bookings/trips for National Rail.
 CREATE TABLE national_rail_payment_record (
-    payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for the payment-booking link; payment_id remains the stable reference to the payment record.
-    payment_id VARCHAR(20) UNIQUE NOT NULL,
-    booking_id VARCHAR(20) NOT NULL,
+    national_rail_payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key permits multiple payment events, such as payment and refund, for one booking.
+    payment_pk BIGINT UNIQUE NOT NULL,
+    booking_pk BIGINT NOT NULL,
     
     FOREIGN KEY (payment_pk)
-        REFERENCES payment_record(payment_pk),
-    FOREIGN KEY (booking_id)
-        REFERENCES national_rail_booking(booking_id)
+        REFERENCES payment_record(payment_pk)
+        ON DELETE RESTRICT, -- Payments should not be deleted when a booking is deleted to preserve historical data, but the payment can be refunded instead.
+    FOREIGN KEY (booking_pk)
+        REFERENCES national_rail_booking(booking_pk)
+        ON DELETE RESTRICT -- Bookings should not be deleted when a payment is deleted to preserve historical data, but the booking can be cancelled instead.
 );
 
 -- Linking payments to the bookings/trips for Metro. Note that for Metro, multiple trips (day pass + subsequent trips) can reference the same payment record if they are linked by the day_pass_ref.
 CREATE TABLE metro_payment_record (
-    payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for the payment-trip link; payment_id remains the stable reference to the payment record.
-    payment_id VARCHAR(20) UNIQUE NOT NULL,
-    trip_id VARCHAR(20) NOT NULL,
+    metro_payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key identifies each payment-to-trip association, including shared day-pass payments.
+    payment_pk BIGINT NOT NULL,
+    trip_pk INTEGER NOT NULL,
     
     FOREIGN KEY (payment_pk)
-        REFERENCES payment_record(payment_pk),
-    FOREIGN KEY (trip_id)
-        REFERENCES metro_booking(trip_id)
+        REFERENCES payment_record(payment_pk)
+        ON DELETE RESTRICT, -- Payments should not be deleted when a trip is deleted to preserve historical data, but the payment can be refunded instead.
+    FOREIGN KEY (trip_pk)
+        REFERENCES metro_booking(trip_pk)
+        ON DELETE RESTRICT, -- Trips should not be deleted when a payment is deleted to preserve historical data, but the trip can be cancelled instead.
+    UNIQUE (payment_pk, trip_pk) -- Ensures a payment record can only be linked once to the same trip, but allows multiple trips to share the same payment (e.g., day pass + subsequent trips).
 );
 
 
@@ -702,35 +718,50 @@ CREATE TABLE feedback_base (
     submitted_at TIMESTAMPTZ NOT NULL,
     
     FOREIGN KEY (user_id)
-        REFERENCES user_profiles(user_id),
+        REFERENCES user_profiles(user_id)
+        ON DELETE RESTRICT, -- Feedback should not be deleted when a user is deleted to preserve historical data, but the user can be deactivated instead.
         
     CHECK (rating >= 1 AND rating <= 5),
-    CHECK (comment IS NULL OR LENGTH(comment) > 0)
+    CHECK (comment IS NULL OR LENGTH(TRIM(comment)) > 0) -- Comment can be null, but if provided it cannot be empty or just whitespace.
 );
 
 -- Linking feedback to the bookings/trips for National Rail.
 CREATE TABLE national_rail_feedback (
-    feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
-    feedback_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the feedback, used in external references and user display.
-    booking_id VARCHAR(20) NOT NULL,
+    national_rail_feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key identifies the relationship while feedback_pk remains unique across feedback targets.
+    feedback_pk BIGINT UNIQUE NOT NULL,
+    booking_pk BIGINT NOT NULL,
     
     FOREIGN KEY (feedback_pk)
-        REFERENCES feedback_base(feedback_pk),
-    FOREIGN KEY (booking_id)
-        REFERENCES national_rail_booking(booking_id)
+        REFERENCES feedback_base(feedback_pk)
+        ON DELETE RESTRICT, -- Feedback should not be deleted when a booking is deleted to preserve historical data, but the feedback can be moderated instead.
+    FOREIGN KEY (booking_pk)
+        REFERENCES national_rail_booking(booking_pk)
+        ON DELETE RESTRICT -- Bookings should not be deleted when feedback is deleted to preserve historical data, but the booking can be cancelled instead.
 );
 
 -- Linking feedback to the bookings/trips for Metro.
 CREATE TABLE metro_feedback (
-    feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
-    feedback_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the feedback, used in external references and user display.
-    trip_id VARCHAR(20) NOT NULL,
+    metro_feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key identifies the relationship while feedback_pk remains unique across feedback targets.
+    feedback_pk BIGINT UNIQUE NOT NULL,
+    trip_pk INTEGER NOT NULL,
     
     FOREIGN KEY (feedback_pk)
-        REFERENCES feedback_base(feedback_pk),
-    FOREIGN KEY (trip_id)
-        REFERENCES metro_booking(trip_id)
+        REFERENCES feedback_base(feedback_pk)
+        ON DELETE RESTRICT, -- Feedback should not be deleted when a trip is deleted to preserve historical data, but the feedback can be moderated instead.
+    FOREIGN KEY (trip_pk)
+        REFERENCES metro_booking(trip_pk)
+        ON DELETE RESTRICT -- Trips should not be deleted when feedback is deleted to preserve historical data, but the trip can be cancelled instead.
 );
+git add databases/relational/schema.sql
+-- Foreign-key indexes support the live-test lookups without changing the
+-- normalised ownership model of the seven business tables.
+CREATE INDEX idx_national_rail_booking_user ON national_rail_booking(user_id);
+CREATE INDEX idx_metro_booking_user ON metro_booking(user_id);
+CREATE INDEX idx_national_rail_payment_booking ON national_rail_payment_record(booking_pk);
+CREATE INDEX idx_metro_payment_trip ON metro_payment_record(trip_pk);
+CREATE INDEX idx_feedback_base_user ON feedback_base(user_id);
+CREATE INDEX idx_national_rail_feedback_booking ON national_rail_feedback(booking_pk);
+CREATE INDEX idx_metro_feedback_trip ON metro_feedback(trip_pk);
 
 -- ============================================================
 --  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
