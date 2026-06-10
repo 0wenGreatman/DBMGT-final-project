@@ -802,7 +802,171 @@ def execute_booking(
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = None
+    try:
+        conn = psycopg2.connect(PG_DSN)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Verify user exists and is active
+        cur.execute("SELECT user_id FROM user_profiles WHERE user_id = %s AND is_active = TRUE", (user_id,))
+        if not cur.fetchone():
+            return False, "User not found or inactive"
+
+        # Verify schedule exists and is active
+        cur.execute("""
+            SELECT ss.schedule_id
+            FROM schedule_services ss
+            WHERE ss.schedule_id = %s
+              AND ss.is_active = TRUE
+              AND ss.service_type IN ('normal', 'express')
+        """, (schedule_id,))
+        if not cur.fetchone():
+            return False, "Schedule not found or inactive"
+
+        # Validate origin station: exists, allows boarding, is part of schedule
+        cur.execute("""
+            SELECT stop_sequence FROM schedule_stops
+            WHERE schedule_id = %s AND station_id = %s AND is_boarding_allowed = TRUE
+        """, (schedule_id, origin_station_id))
+        origin_row = cur.fetchone()
+        if not origin_row:
+            return False, "Origin station not valid or boarding not allowed"
+        origin_seq = origin_row['stop_sequence']
+
+        # Validate destination station: exists, allows alighting, is part of schedule
+        cur.execute("""
+            SELECT stop_sequence FROM schedule_stops
+            WHERE schedule_id = %s AND station_id = %s AND is_alighting_allowed = TRUE
+        """, (schedule_id, destination_station_id))
+        dest_row = cur.fetchone()
+        if not dest_row:
+            return False, "Destination station not valid or alighting not allowed"
+        dest_seq = dest_row['stop_sequence']
+
+        # Verify origin comes before destination in the route
+        if origin_seq >= dest_seq:
+            return False, "Origin must come before destination"
+
+        stops_travelled = dest_seq - origin_seq
+
+        # Query departure for the requested travel date
+        cur.execute("""
+            SELECT departure_id, departure_time
+            FROM service_departures
+            WHERE schedule_id = %s
+              AND service_date = %s::date
+              AND status <> 'cancelled'
+            ORDER BY departure_time
+            LIMIT 1
+        """, (schedule_id, travel_date))
+        departure_row = cur.fetchone()
+        if not departure_row:
+            return False, "No available departure for this date"
+        departure_id = departure_row['departure_id']
+
+        # Verify ticket type exists in the system
+        cur.execute(
+            "SELECT ticket_type_id FROM ticket_types WHERE ticket_type_id = %s",
+            (ticket_type,)
+        )
+        if not cur.fetchone():
+            return False, f"Ticket type '{ticket_type}' not found"
+
+        # Calculate fare based on schedule, fare class, and distance (stops travelled)
+        fare_info = query_national_rail_fare(schedule_id, fare_class, stops_travelled)
+        if not fare_info:
+            return False, f"No fare rule for {fare_class} class on this schedule"
+        amount_usd = Decimal(str(fare_info['total_fare_usd']))
+
+        # Handle seat assignment: auto-select or validate user-provided seat
+        if seat_id.lower() == "any":
+            # Auto-select seats that are adjacent when possible
+            available_seats = query_available_seats(schedule_id, travel_date, fare_class)
+            if not available_seats:
+                return False, "No available seats for this journey"
+            selected = auto_select_adjacent_seats(available_seats, 1)
+            if not selected:
+                return False, "Unable to auto-select a seat"
+            seat_id = selected[0]
+
+        # Verify seat is valid for the selected fare class and schedule
+        cur.execute("""
+            SELECT s.seat_pk FROM seats s
+            JOIN coaches c ON c.coach_pk = s.coach_pk
+            JOIN seat_layouts sl ON sl.seat_layout_pk = c.seat_layout_pk
+            WHERE sl.schedule_id = %s
+              AND s.seat_code = %s
+              AND c.fare_class_id = %s
+              AND s.is_active = TRUE
+              AND c.is_active = TRUE
+        """, (schedule_id, seat_id, fare_class))
+        seat_row = cur.fetchone()
+        if not seat_row:
+            return False, f"Seat {seat_id} invalid for {fare_class} class"
+        seat_pk = seat_row['seat_pk']
+
+        # Check if seat is already reserved on this departure
+        cur.execute("""
+            SELECT seat_reservation_pk FROM seat_reservations
+            WHERE departure_id = %s
+              AND seat_pk = %s
+              AND reservation_status IN ('held', 'confirmed', 'completed')
+              AND (reservation_status <> 'held' 
+                   OR held_until IS NULL 
+                   OR held_until > CURRENT_TIMESTAMP)
+        """, (departure_id, seat_pk))
+        if cur.fetchone():
+            return False, f"Seat {seat_id} is already reserved"
+
+        # Create the booking record
+        booking_id = _gen_booking_id()
+        now = datetime.now(timezone.utc)
+
+        cur.execute("""
+            INSERT INTO national_rail_booking (
+                booking_id, user_id, origin_station_id, destination_station_id,
+                travel_date, departure_id, ticket_type_id, amount_usd,
+                status, booked_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING booking_pk, booking_id, user_id, origin_station_id,
+                      destination_station_id, travel_date, amount_usd, status, booked_at
+        """, (
+            booking_id, user_id, origin_station_id, destination_station_id,
+            travel_date, departure_id, ticket_type, amount_usd,
+            'confirmed', now
+        ))
+
+        booking = cur.fetchone()
+        if not booking:
+            conn.rollback()
+            return False, "Failed to create booking record"
+
+        # Create seat reservation with confirmed status
+        cur.execute("""
+            INSERT INTO seat_reservations (
+                departure_id, seat_pk, booking_id, origin_station_id,
+                destination_station_id, origin_stop_sequence, destination_stop_sequence,
+                reservation_status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            departure_id, seat_pk, booking_id, origin_station_id,
+            destination_station_id, origin_seq, dest_seq, 'confirmed'
+        ))
+
+        conn.commit()
+        return True, _row_to_dict(booking)
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"Booking failed: {str(e)}"
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
 
 
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
