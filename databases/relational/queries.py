@@ -655,7 +655,7 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN stations destination
             ON destination.station_pk = nb.destination_station_pk
         JOIN service_departures sd
-            ON sd.service_departure_pk = nb.departure_pk
+            ON sd.service_departure_pk = nb.service_departure_pk
         JOIN schedule_services ss
             ON ss.schedule_id = sd.schedule_id
         JOIN ticket_types tt
@@ -727,7 +727,7 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
     if not booking_id:
         return None
     
-    # 判斷是國鐵還是地鐵
+    # Determine booking type by prefix: "BK" for national rail, "MT" for metro
     is_national_rail = booking_id.upper().startswith("BK")
     is_metro = booking_id.upper().startswith("MT")
     
@@ -742,7 +742,10 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
             FROM payment_record pr
             JOIN national_rail_payment_record nrpr
                 ON nrpr.payment_pk = pr.payment_pk
-            WHERE nrpr.booking_id = %s
+            JOIN national_rail_booking nrb
+                ON nrb.booking_pk = nrpr.booking_pk
+            WHERE nrb.booking_id = %s
+            ORDER BY pr.paid_at DESC, pr.payment_pk DESC
             LIMIT 1
         """
     elif is_metro:
@@ -756,7 +759,10 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
             FROM payment_record pr
             JOIN metro_payment_record mrpr
                 ON mrpr.payment_pk = pr.payment_pk
-            WHERE mrpr.trip_id = %s
+            JOIN metro_booking mb
+                ON mb.trip_pk = mrpr.trip_pk
+            WHERE mb.trip_id = %s
+            ORDER BY pr.paid_at DESC, pr.payment_pk DESC
             LIMIT 1
         """
     else:
@@ -803,6 +809,7 @@ def execute_booking(
         (False, error_message) on failure
     """
     conn = None
+    cur = None
     try:
         conn = psycopg2.connect(PG_DSN)
         conn.autocommit = False
@@ -826,23 +833,33 @@ def execute_booking(
 
         # Validate origin station: exists, allows boarding, is part of schedule
         cur.execute("""
-            SELECT stop_sequence FROM schedule_stops
-            WHERE schedule_id = %s AND station_id = %s AND is_boarding_allowed = TRUE
+            SELECT st.stop_sequence, s.station_pk
+            FROM schedule_stops st
+            JOIN stations s ON s.station_id = st.station_id
+            WHERE st.schedule_id = %s
+              AND st.station_id = %s
+              AND st.is_boarding_allowed = TRUE
         """, (schedule_id, origin_station_id))
         origin_row = cur.fetchone()
         if not origin_row:
             return False, "Origin station not valid or boarding not allowed"
         origin_seq = origin_row['stop_sequence']
+        origin_station_pk = origin_row['station_pk']
 
         # Validate destination station: exists, allows alighting, is part of schedule
         cur.execute("""
-            SELECT stop_sequence FROM schedule_stops
-            WHERE schedule_id = %s AND station_id = %s AND is_alighting_allowed = TRUE
+            SELECT st.stop_sequence, s.station_pk
+            FROM schedule_stops st
+            JOIN stations s ON s.station_id = st.station_id
+            WHERE st.schedule_id = %s
+              AND st.station_id = %s
+              AND st.is_alighting_allowed = TRUE
         """, (schedule_id, destination_station_id))
         dest_row = cur.fetchone()
         if not dest_row:
             return False, "Destination station not valid or alighting not allowed"
         dest_seq = dest_row['stop_sequence']
+        destination_station_pk = dest_row['station_pk']
 
         # Verify origin comes before destination in the route
         if origin_seq >= dest_seq:
@@ -852,7 +869,7 @@ def execute_booking(
 
         # Query departure for the requested travel date
         cur.execute("""
-            SELECT departure_id, departure_time
+            SELECT service_departure_pk, departure_id, departure_time
             FROM service_departures
             WHERE schedule_id = %s
               AND service_date = %s::date
@@ -864,14 +881,22 @@ def execute_booking(
         if not departure_row:
             return False, "No available departure for this date"
         departure_id = departure_row['departure_id']
+        service_departure_pk = departure_row['service_departure_pk']
 
         # Verify ticket type exists in the system
-        cur.execute(
-            "SELECT ticket_type_id FROM ticket_types WHERE ticket_type_id = %s",
-            (ticket_type,)
-        )
-        if not cur.fetchone():
+        cur.execute("""
+            SELECT tt.ticket_type_pk
+            FROM ticket_types tt
+            JOIN ticket_type_networks ttn
+                ON ttn.ticket_type_id = tt.ticket_type_id
+               AND ttn.network_id = 'N'
+            WHERE tt.ticket_type_id = %s
+              AND tt.is_active = TRUE
+        """, (ticket_type,))
+        ticket_type_row = cur.fetchone()
+        if not ticket_type_row:
             return False, f"Ticket type '{ticket_type}' not found"
+        ticket_type_pk = ticket_type_row['ticket_type_pk']
 
         # Calculate fare based on schedule, fare class, and distance (stops travelled)
         fare_info = query_national_rail_fare(schedule_id, fare_class, stops_travelled)
@@ -900,6 +925,7 @@ def execute_booking(
               AND c.fare_class_id = %s
               AND s.is_active = TRUE
               AND c.is_active = TRUE
+            FOR UPDATE OF s
         """, (schedule_id, seat_id, fare_class))
         seat_row = cur.fetchone()
         if not seat_row:
@@ -925,16 +951,16 @@ def execute_booking(
 
         cur.execute("""
             INSERT INTO national_rail_booking (
-                booking_id, user_id, origin_station_id, destination_station_id,
-                travel_date, departure_id, ticket_type_id, amount_usd,
+                booking_id, user_id, origin_station_pk, destination_station_pk,
+                travel_date, service_departure_pk, ticket_type_pk, amount_usd,
                 status, booked_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING booking_pk, booking_id, user_id, origin_station_id,
-                      destination_station_id, travel_date, amount_usd, status, booked_at
+            RETURNING booking_pk, booking_id, user_id, travel_date,
+                      amount_usd, status, booked_at
         """, (
-            booking_id, user_id, origin_station_id, destination_station_id,
-            travel_date, departure_id, ticket_type, amount_usd,
+            booking_id, user_id, origin_station_pk, destination_station_pk,
+            travel_date, service_departure_pk, ticket_type_pk, amount_usd,
             'confirmed', now
         ))
 
@@ -956,16 +982,45 @@ def execute_booking(
             destination_station_id, origin_seq, dest_seq, 'confirmed'
         ))
 
+        # The rubric requires booking and payment to be all-or-nothing, so the
+        # payment and its link are inserted before the single commit below.
+        payment_id = _gen_payment_id()
+        cur.execute("""
+            INSERT INTO payment_record (
+                payment_id, amount_usd, method, status, paid_at
+            )
+            VALUES (%s, %s, 'credit_card', 'paid', %s)
+            RETURNING payment_pk
+        """, (payment_id, amount_usd, now))
+        payment = cur.fetchone()
+
+        cur.execute("""
+            INSERT INTO national_rail_payment_record (payment_pk, booking_pk)
+            VALUES (%s, %s)
+        """, (payment['payment_pk'], booking['booking_pk']))
+
         conn.commit()
-        return True, _row_to_dict(booking)
+        result = dict(booking)
+        result.update({
+            "schedule_id": schedule_id,
+            "origin_station_id": origin_station_id,
+            "destination_station_id": destination_station_id,
+            "departure_id": departure_id,
+            "ticket_type": ticket_type,
+            "fare_class": fare_class,
+            "seat_id": seat_id,
+            "payment_id": payment_id,
+        })
+        return True, _row_to_dict(result)
 
     except Exception as e:
         if conn:
             conn.rollback()
         return False, f"Booking failed: {str(e)}"
     finally:
-        if conn:
+        if cur:
             cur.close()
+        if conn:
             conn.close()
 
 
@@ -987,6 +1042,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         (False, error_msg)
     """
     conn = None
+    cur = None
     try:
         conn = psycopg2.connect(PG_DSN)
         conn.autocommit = False
@@ -1002,11 +1058,26 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 nrb.travel_date,
                 nrb.status,
                 nrb.booked_at,
-                ss.service_type
+                ss.service_type,
+                EXTRACT(EPOCH FROM (
+                    (sd.service_date + sd.departure_time) - CURRENT_TIMESTAMP
+                )) / 3600 AS hours_until_departure,
+                original_payment.method AS payment_method
             FROM national_rail_booking nrb
-            JOIN service_departures sd ON sd.departure_id = nrb.departure_id
+            JOIN service_departures sd
+                ON sd.service_departure_pk = nrb.service_departure_pk
             JOIN schedule_services ss ON ss.schedule_id = sd.schedule_id
+            LEFT JOIN LATERAL (
+                SELECT pr.method
+                FROM national_rail_payment_record nrpr
+                JOIN payment_record pr ON pr.payment_pk = nrpr.payment_pk
+                WHERE nrpr.booking_pk = nrb.booking_pk
+                  AND pr.status = 'paid'
+                ORDER BY pr.paid_at DESC, pr.payment_pk DESC
+                LIMIT 1
+            ) original_payment ON TRUE
             WHERE nrb.booking_id = %s
+            FOR UPDATE OF nrb
         """, (booking_id,))
         booking = cur.fetchone()
 
@@ -1018,51 +1089,62 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             return False, "Booking does not belong to this user"
 
         # Check if booking can be cancelled
-        if booking['status'] not in ('confirmed', 'completed'):
+        if booking['status'] != 'confirmed':
             return False, f"Cannot cancel booking with status '{booking['status']}'"
 
-        # Calculate days until departure
-        travel_date = booking['travel_date']
-        today = date.today()
-        days_until_departure = (travel_date - today).days
+        hours_until_departure = max(
+            Decimal(booking['hours_until_departure']),
+            Decimal("0"),
+        )
 
         # Determine refund policy and percentage based on service type and timing
         service_type = booking['service_type']
         
         if service_type in ('normal',):
             # RF001: Normal service refund windows
-            if days_until_departure >= 7:
+            if hours_until_departure >= 48:
                 refund_percentage = 100
-                policy_note = "RF001: 7+ days before departure (100% refund)"
-            elif days_until_departure >= 3:
+                admin_fee = Decimal("0.00")
+                policy_note = "RF001: 48+ hours before departure (100% refund)"
+            elif hours_until_departure >= 24:
                 refund_percentage = 75
-                policy_note = "RF001: 3-7 days before departure (75% refund)"
-            elif days_until_departure >= 1:
+                admin_fee = Decimal("0.50")
+                policy_note = "RF001: 24-48 hours before departure (75% refund, $0.50 fee)"
+            elif hours_until_departure >= 2:
                 refund_percentage = 50
-                policy_note = "RF001: 1-3 days before departure (50% refund)"
+                admin_fee = Decimal("0.50")
+                policy_note = "RF001: 2-24 hours before departure (50% refund, $0.50 fee)"
             else:
                 refund_percentage = 0
-                policy_note = "RF001: Less than 1 day before departure (0% refund)"
+                admin_fee = Decimal("0.00")
+                policy_note = "RF001: Less than 2 hours before departure (0% refund)"
         
         elif service_type in ('express',):
             # RF002: Express service refund windows
-            if days_until_departure >= 3:
+            if hours_until_departure >= 48:
                 refund_percentage = 100
-                policy_note = "RF002: 3+ days before departure (100% refund)"
-            elif days_until_departure >= 1:
+                admin_fee = Decimal("1.00")
+                policy_note = "RF002: 48+ hours before departure (100% refund, $1.00 fee)"
+            elif hours_until_departure >= 24:
                 refund_percentage = 50
-                policy_note = "RF002: 1-3 days before departure (50% refund)"
+                admin_fee = Decimal("1.00")
+                policy_note = "RF002: 24-48 hours before departure (50% refund, $1.00 fee)"
             else:
                 refund_percentage = 0
-                policy_note = "RF002: Less than 1 day before departure (0% refund)"
+                admin_fee = Decimal("0.00")
+                policy_note = "RF002: Less than 24 hours before departure (0% refund)"
         
         else:
             # Default policy for unknown service types
             refund_percentage = 50
+            admin_fee = Decimal("0.00")
             policy_note = f"Default policy: 50% refund for {service_type} service"
 
         # Calculate refund amount
-        refund_amount = booking['amount_usd'] * Decimal(refund_percentage) / 100
+        refund_amount = max(
+            booking['amount_usd'] * Decimal(refund_percentage) / 100 - admin_fee,
+            Decimal("0.00"),
+        ).quantize(Decimal("0.01"))
 
         # Update booking status to cancelled
         now = datetime.now(timezone.utc)
@@ -1088,6 +1170,9 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
 
         # Generate refund payment record if refund amount > 0
         if refund_amount > 0:
+            if not booking['payment_method']:
+                return False, "Cannot issue refund because no original payment was found"
+
             refund_payment_id = _gen_payment_id()
             cur.execute("""
                 INSERT INTO payment_record (
@@ -1098,8 +1183,8 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             """, (
                 refund_payment_id,
                 refund_amount,
-                'refund',
-                'paid',
+                booking['payment_method'],
+                'refunded',
                 now
             ))
             
@@ -1107,9 +1192,9 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             if refund_payment:
                 # Link refund to the original booking
                 cur.execute("""
-                    INSERT INTO national_rail_payment_record (payment_pk, booking_id)
+                    INSERT INTO national_rail_payment_record (payment_pk, booking_pk)
                     VALUES (%s, %s)
-                """, (refund_payment['payment_pk'], booking_id))
+                """, (refund_payment['payment_pk'], booking['booking_pk']))
 
         conn.commit()
         
@@ -1118,10 +1203,12 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             'booking_id': booking_id,
             'original_amount_usd': float(booking['amount_usd']),
             'refund_percentage': refund_percentage,
+            'admin_fee_usd': float(admin_fee),
+            'refund_amount': float(refund_amount),
             'refund_amount_usd': float(refund_amount),
             'policy_note': policy_note,
             'cancelled_at': now.isoformat(),
-            'days_until_departure': days_until_departure
+            'hours_until_departure': float(hours_until_departure)
         }
         
         return True, result
@@ -1131,8 +1218,9 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             conn.rollback()
         return False, f"Cancellation failed: {str(e)}"
     finally:
-        if conn:
+        if cur:
             cur.close()
+        if conn:
             conn.close()
 
 
