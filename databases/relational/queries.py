@@ -291,7 +291,7 @@ def register_user(
         conn = psycopg2.connect(PG_DSN)
         try:
             with conn.cursor() as cur:
-                # 1. Get or create security question
+                # Get or create security question
                 cur.execute("SELECT id FROM security_questions WHERE question_text = %s", (secret_question,))
                 sq_row = cur.fetchone()
                 if sq_row:
@@ -300,7 +300,7 @@ def register_user(
                     cur.execute("INSERT INTO security_questions (question_text) VALUES (%s) RETURNING id", (secret_question,))
                     sq_id = cur.fetchone()[0]
                 
-                # 2. Insert user profile
+                # Insert user profile
                 cur.execute(
                     """
                     INSERT INTO user_profiles (user_id, first_name, surname, email, phone, date_of_birth)
@@ -313,7 +313,7 @@ def register_user(
                 profile_uuid = profile_row[0]
                 final_user_id = profile_row[1]
                 
-                # 3. Insert user credentials
+                # Insert user credentials
                 cur.execute(
                     """
                     INSERT INTO user_credentials (user_profile_id, password_hash, hash_algorithm, security_question_id, secret_answer_hash)
@@ -403,7 +403,26 @@ def login_user(email: str, password: str) -> Optional[dict]:
 
 def get_user_secret_question(email: str) -> Optional[str]:
     """Return the secret question for a registered email, or None if not found."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT sq.question_text
+                    FROM user_profiles p
+                    JOIN user_credentials c ON p.id = c.user_profile_id
+                    JOIN security_questions sq ON c.security_question_id = sq.id
+                    WHERE p.email = %s AND p.deleted_at IS NULL
+                    """,
+                    (email,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return row["question_text"]
+                return None
+    except Exception as e:
+        print(f"Error fetching secret question: {e}")
+        return None
 
 
 def verify_secret_answer(email: str, answer: str) -> bool:
