@@ -576,13 +576,14 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
 
 -- Bookings and travel history for National Rail. 
 CREATE TABLE national_rail_booking (
-    booking_id VARCHAR(20) PRIMARY KEY,
+    booking_id BIGSERIAL PRIMARY KEY, -- Surrogate key for booking identity; booking_id remains the stable reference for external use.
+    booking_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the booking, used in external references and user display.
     user_id VARCHAR(20) NOT NULL,
-    origin_station_id VARCHAR(10) NOT NULL,
-    destination_station_id VARCHAR(10) NOT NULL,
+    origin_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the origin station of the trip.
+    destination_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the destination station of the trip.
     travel_date DATE NOT NULL,
-    departure_id VARCHAR(20) NOT NULL,
-    ticket_type_id VARCHAR(20) NOT NULL,
+    departure_pk INTEGER NOT NULL, -- FK to service_departures(service_departure_pk) for the specific train departure.
+    ticket_type_pk INTEGER NOT NULL, -- FK to ticket_types(ticket_type_pk) for the type of ticket purchased.
     amount_usd DECIMAL(10, 2) NOT NULL,
     status VARCHAR(20) NOT NULL,
     booked_at TIMESTAMPTZ NOT NULL,
@@ -590,14 +591,14 @@ CREATE TABLE national_rail_booking (
     
     FOREIGN KEY (user_id)
         REFERENCES user_profiles(user_id),
-    FOREIGN KEY (origin_station_id)
-        REFERENCES stations(station_id),
-    FOREIGN KEY (destination_station_id)
-        REFERENCES stations(station_id),
-    FOREIGN KEY (departure_id)
-        REFERENCES service_departures(departure_id),
-    FOREIGN KEY (ticket_type_id)
-        REFERENCES ticket_types(ticket_type_id),
+    FOREIGN KEY (origin_station_pk)
+        REFERENCES stations(station_pk),
+    FOREIGN KEY (destination_station_pk)
+        REFERENCES stations(station_pk),
+    FOREIGN KEY (departure_pk)
+        REFERENCES service_departures(departure_pk),
+    FOREIGN KEY (ticket_type_pk)
+        REFERENCES ticket_types(ticket_type_pk),
         
     CHECK (status IN ('confirmed', 'completed', 'cancelled')),
     CHECK (amount_usd > 0),
@@ -607,13 +608,14 @@ CREATE TABLE national_rail_booking (
 
 -- Bookings and travel history for Metro.
 CREATE TABLE metro_booking (
-    trip_id VARCHAR(20) PRIMARY KEY,  -- if this is the initial day pass purchase, it can be referenced by subsequent trips
+    trip_pk SERIAL PRIMARY KEY, -- Surrogate key for trip identity; trip_id remains the stable reference for external use.
+    trip_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the trip, used in external references and user display.
     user_id VARCHAR(20) NOT NULL,
-    schedule_id VARCHAR(20) NOT NULL,
-    origin_station_id VARCHAR(10) NOT NULL,
-    destination_station_id VARCHAR(10) NOT NULL,
+    schedule_service_pk INTEGER NOT NULL, -- FK to schedule_services(schedule_service_pk) for the specific metro service pattern.
+    origin_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the origin station of the trip.
+    destination_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the destination station of the trip.
     travel_date DATE NOT NULL,
-    ticket_type_id VARCHAR(20) NOT NULL,
+    ticket_type_pk INTEGER NOT NULL, -- FK to ticket_types(ticket_type_pk) for the type of ticket purchased.
     day_pass_ref VARCHAR(20),  -- Self-referencing FK to metro_booking(trip_id): links subsequent trips to their original day pass
     stops_travelled INTEGER,
     amount_usd DECIMAL(10, 2) NOT NULL,
@@ -623,14 +625,14 @@ CREATE TABLE metro_booking (
     
     FOREIGN KEY (user_id)
         REFERENCES user_profiles(user_id),
-    FOREIGN KEY (schedule_id)
-        REFERENCES schedule_services(schedule_id),
-    FOREIGN KEY (origin_station_id)
-        REFERENCES stations(station_id),
-    FOREIGN KEY (destination_station_id)
-        REFERENCES stations(station_id),
-    FOREIGN KEY (ticket_type_id)
-        REFERENCES ticket_types(ticket_type_id),
+    FOREIGN KEY (schedule_service_pk)
+        REFERENCES schedule_services(schedule_service_pk),
+    FOREIGN KEY (origin_station_pk)
+        REFERENCES stations(station_pk),
+    FOREIGN KEY (destination_station_pk)
+        REFERENCES stations(station_pk),
+    FOREIGN KEY (ticket_type_pk)
+        REFERENCES ticket_types(ticket_type_pk),
     FOREIGN KEY (day_pass_ref)
         REFERENCES metro_booking(trip_id),
         
@@ -649,7 +651,8 @@ CREATE TABLE metro_booking (
 
 -- Payment records for both National Rail and Metro.
 CREATE TABLE payment_record (
-    payment_id VARCHAR(20) PRIMARY KEY,
+    payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for payment identity; payment_id remains the stable reference for external use.
+    payment_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the payment, used in external references and user display.
     amount_usd DECIMAL(10, 2) NOT NULL,
     method VARCHAR(50) NOT NULL,
     status VARCHAR(20) NOT NULL,
@@ -662,22 +665,24 @@ CREATE TABLE payment_record (
 
 -- Linking payments to the bookings/trips for National Rail.
 CREATE TABLE national_rail_payment_record (
-    payment_id VARCHAR(20) PRIMARY KEY,
+    payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for the payment-booking link; payment_id remains the stable reference to the payment record.
+    payment_id VARCHAR(20) UNIQUE NOT NULL,
     booking_id VARCHAR(20) NOT NULL,
     
-    FOREIGN KEY (payment_id)
-        REFERENCES payment_record(payment_id),
+    FOREIGN KEY (payment_pk)
+        REFERENCES payment_record(payment_pk),
     FOREIGN KEY (booking_id)
         REFERENCES national_rail_booking(booking_id)
 );
 
 -- Linking payments to the bookings/trips for Metro. Note that for Metro, multiple trips (day pass + subsequent trips) can reference the same payment record if they are linked by the day_pass_ref.
 CREATE TABLE metro_payment_record (
-    payment_id VARCHAR(20) PRIMARY KEY,
+    payment_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for the payment-trip link; payment_id remains the stable reference to the payment record.
+    payment_id VARCHAR(20) UNIQUE NOT NULL,
     trip_id VARCHAR(20) NOT NULL,
     
-    FOREIGN KEY (payment_id)
-        REFERENCES payment_record(payment_id),
+    FOREIGN KEY (payment_pk)
+        REFERENCES payment_record(payment_pk),
     FOREIGN KEY (trip_id)
         REFERENCES metro_booking(trip_id)
 );
@@ -689,7 +694,8 @@ CREATE TABLE metro_payment_record (
 
 -- Feedback records for both National Rail and Metro.
 CREATE TABLE feedback_base (
-    feedback_id VARCHAR(20) PRIMARY KEY,
+    feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
+    feedback_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the feedback, used in external references and user display.
     user_id VARCHAR(20) NOT NULL,
     rating INTEGER NOT NULL,
     comment TEXT,
@@ -704,22 +710,22 @@ CREATE TABLE feedback_base (
 
 -- Linking feedback to the bookings/trips for National Rail.
 CREATE TABLE national_rail_feedback (
-    feedback_id VARCHAR(20) PRIMARY KEY,
+    feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
     booking_id VARCHAR(20) NOT NULL,
     
-    FOREIGN KEY (feedback_id)
-        REFERENCES feedback_base(feedback_id),
+    FOREIGN KEY (feedback_pk)
+        REFERENCES feedback_base(feedback_pk),
     FOREIGN KEY (booking_id)
         REFERENCES national_rail_booking(booking_id)
 );
 
 -- Linking feedback to the bookings/trips for Metro.
 CREATE TABLE metro_feedback (
-    feedback_id VARCHAR(20) PRIMARY KEY,
+    feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
     trip_id VARCHAR(20) NOT NULL,
     
-    FOREIGN KEY (feedback_id)
-        REFERENCES feedback_base(feedback_id),
+    FOREIGN KEY (feedback_pk)
+        REFERENCES feedback_base(feedback_pk),
     FOREIGN KEY (trip_id)
         REFERENCES metro_booking(trip_id)
 );
