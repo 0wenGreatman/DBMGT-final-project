@@ -582,7 +582,7 @@ CREATE TABLE national_rail_booking (
     origin_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the origin station of the trip.
     destination_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the destination station of the trip.
     travel_date DATE NOT NULL,
-    departure_pk INTEGER NOT NULL, -- FK to service_departures(service_departure_pk) for the specific train departure.
+    service_departure_pk BIGINT NOT NULL, -- FK to service_departures(service_departure_pk) for the specific train departure.
     ticket_type_pk INTEGER NOT NULL, -- FK to ticket_types(ticket_type_pk) for the type of ticket purchased.
     amount_usd DECIMAL(10, 2) NOT NULL,
     status VARCHAR(20) NOT NULL,
@@ -595,8 +595,8 @@ CREATE TABLE national_rail_booking (
         REFERENCES stations(station_pk),
     FOREIGN KEY (destination_station_pk)
         REFERENCES stations(station_pk),
-    FOREIGN KEY (departure_pk)
-        REFERENCES service_departures(departure_pk),
+    FOREIGN KEY (service_departure_pk)
+        REFERENCES service_departures(service_departure_pk),
     FOREIGN KEY (ticket_type_pk)
         REFERENCES ticket_types(ticket_type_pk),
         
@@ -711,6 +711,7 @@ CREATE TABLE feedback_base (
 -- Linking feedback to the bookings/trips for National Rail.
 CREATE TABLE national_rail_feedback (
     feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
+    feedback_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the feedback, used in external references and user display.
     booking_id VARCHAR(20) NOT NULL,
     
     FOREIGN KEY (feedback_pk)
@@ -722,6 +723,7 @@ CREATE TABLE national_rail_feedback (
 -- Linking feedback to the bookings/trips for Metro.
 CREATE TABLE metro_feedback (
     feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
+    feedback_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the feedback, used in external references and user display.
     trip_id VARCHAR(20) NOT NULL,
     
     FOREIGN KEY (feedback_pk)
