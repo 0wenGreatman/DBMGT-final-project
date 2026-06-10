@@ -267,11 +267,74 @@ def register_user(
     """
     Register a new user.
     Returns (True, user_id) on success or (False, error_message) on failure.
-
-    NOTE: passwords are stored as plain text here intentionally for teaching
-    purposes. In production, replace with a salted hash (e.g. bcrypt).
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        
+        # Configure passlib to use argon2id by default, but support others
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        # Hash the password and secret answer
+        password_hash = pwd_context.hash(password)
+        secret_answer_hash = pwd_context.hash(secret_answer)
+        
+        # Dynamically identify the algorithm used
+        algo_name = pwd_context.identify(password_hash)
+        if not algo_name:
+            algo_name = "unknown"
+            
+        # Default phone as it's not requested by UI
+        phone = "0000000000"
+        date_of_birth = f"{year_of_birth}-01-01"
+        user_id = f"RU-{''.join(random.choices(string.digits, k=6))}"
+        
+        conn = psycopg2.connect(PG_DSN)
+        try:
+            with conn.cursor() as cur:
+                # 1. Get or create security question
+                cur.execute("SELECT id FROM security_questions WHERE question_text = %s", (secret_question,))
+                sq_row = cur.fetchone()
+                if sq_row:
+                    sq_id = sq_row[0]
+                else:
+                    cur.execute("INSERT INTO security_questions (question_text) VALUES (%s) RETURNING id", (secret_question,))
+                    sq_id = cur.fetchone()[0]
+                
+                # 2. Insert user profile
+                cur.execute(
+                    """
+                    INSERT INTO user_profiles (user_id, first_name, surname, email, phone, date_of_birth)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id, user_id
+                    """,
+                    (user_id, first_name, surname, email, phone, date_of_birth)
+                )
+                profile_row = cur.fetchone()
+                profile_uuid = profile_row[0]
+                final_user_id = profile_row[1]
+                
+                # 3. Insert user credentials
+                cur.execute(
+                    """
+                    INSERT INTO user_credentials (user_profile_id, password_hash, hash_algorithm, security_question_id, secret_answer_hash)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (profile_uuid, password_hash, algo_name, sq_id, secret_answer_hash)
+                )
+            conn.commit()
+            return True, final_user_id
+        except psycopg2.IntegrityError as e:
+            conn.rollback()
+            if "email" in str(e).lower():
+                return False, "Email already registered."
+            return False, f"Database integrity error: {e}"
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
+    except Exception as e:
+        return False, str(e)
 
 
 def login_user(email: str, password: str) -> Optional[dict]:
