@@ -427,7 +427,38 @@ def get_user_secret_question(email: str) -> Optional[str]:
 
 def verify_secret_answer(email: str, answer: str) -> bool:
     """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.secret_answer_hash
+                    FROM user_profiles p
+                    JOIN user_credentials c ON p.id = c.user_profile_id
+                    WHERE p.email = %s AND p.deleted_at IS NULL
+                    """,
+                    (email,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                
+                secret_answer_hash = row[0]
+                
+                # Check exact match
+                if pwd_context.verify(answer, secret_answer_hash):
+                    return True
+                # Check lowercase match for case-insensitivity support
+                if pwd_context.verify(answer.lower(), secret_answer_hash):
+                    return True
+                
+                return False
+    except Exception as e:
+        print(f"Error verifying secret answer: {e}")
+        return False
 
 
 def update_password(email: str, new_password: str) -> bool:
