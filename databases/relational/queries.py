@@ -714,8 +714,63 @@ def query_user_bookings(user_email: str) -> dict:
 
 
 def query_payment_info(booking_id: str) -> Optional[dict]:
-    """Return payment record for a booking or metro trip."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    """
+    Return payment record for a booking or metro trip.
+    
+    Args:
+        booking_id: e.g. "BK001" (national rail) or "MT001" (metro)
+    
+    Returns:
+        dict with payment_id, amount_usd, method, status, paid_at
+        or None if not found
+    """
+    if not booking_id:
+        return None
+    
+    # 判斷是國鐵還是地鐵
+    is_national_rail = booking_id.upper().startswith("BK")
+    is_metro = booking_id.upper().startswith("MT")
+    
+    if is_national_rail:
+        sql = """
+            SELECT
+                pr.payment_id,
+                pr.amount_usd,
+                pr.method,
+                pr.status,
+                pr.paid_at
+            FROM payment_record pr
+            JOIN national_rail_payment_record nrpr
+                ON nrpr.payment_pk = pr.payment_pk
+            WHERE nrpr.booking_id = %s
+            LIMIT 1
+        """
+    elif is_metro:
+        sql = """
+            SELECT
+                pr.payment_id,
+                pr.amount_usd,
+                pr.method,
+                pr.status,
+                pr.paid_at
+            FROM payment_record pr
+            JOIN metro_payment_record mrpr
+                ON mrpr.payment_pk = pr.payment_pk
+            WHERE mrpr.trip_id = %s
+            LIMIT 1
+        """
+    else:
+        return None
+    
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (booking_id,))
+            row = cur.fetchone()
+    
+    if not row:
+        return None
+    
+    return _row_to_dict(row)
 
 
 # ── TRANSACTIONAL OPERATIONS ──────────────────────────────────────────────────
