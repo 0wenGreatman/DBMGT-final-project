@@ -578,7 +578,7 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
 CREATE TABLE national_rail_booking (
     booking_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for booking identity; booking_id remains the stable reference for external use.
     booking_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the booking, used in external references and user display.
-    user_id VARCHAR(20) NOT NULL,
+    user_profile_id UUID NOT NULL, -- Immutable surrogate FK; user_id remains a display/business identifier in user_profiles.
     origin_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the origin station of the trip.
     destination_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the destination station of the trip.
     travel_date DATE NOT NULL,
@@ -589,8 +589,8 @@ CREATE TABLE national_rail_booking (
     booked_at TIMESTAMPTZ NOT NULL,
     travelled_at TIMESTAMPTZ,
     
-    FOREIGN KEY (user_id)
-        REFERENCES user_profiles(user_id)
+    FOREIGN KEY (user_profile_id)
+        REFERENCES user_profiles(id)
         ON DELETE RESTRICT, -- Bookings should not be deleted when a user is deleted to preserve historical data.
     FOREIGN KEY (origin_station_pk)
         REFERENCES stations(station_pk)
@@ -615,7 +615,7 @@ CREATE TABLE national_rail_booking (
 CREATE TABLE metro_booking (
     trip_pk SERIAL PRIMARY KEY, -- Surrogate key for trip identity; trip_id remains the stable reference for external use.
     trip_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the trip, used in external references and user display.
-    user_id VARCHAR(20) NOT NULL,
+    user_profile_id UUID NOT NULL, -- Immutable surrogate FK; user_id remains a display/business identifier in user_profiles.
     schedule_service_pk INTEGER NOT NULL, -- FK to schedule_services(schedule_service_pk) for the specific metro service pattern.
     origin_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the origin station of the trip.
     destination_station_pk INTEGER NOT NULL, -- FK to stations(station_pk) for the destination station of the trip.
@@ -628,8 +628,8 @@ CREATE TABLE metro_booking (
     purchased_at TIMESTAMPTZ,
     travelled_at TIMESTAMPTZ,
     
-    FOREIGN KEY (user_id)
-        REFERENCES user_profiles(user_id)
+    FOREIGN KEY (user_profile_id)
+        REFERENCES user_profiles(id)
         ON DELETE RESTRICT, -- Bookings should not be deleted when a user is deleted to preserve historical data.
     FOREIGN KEY (schedule_service_pk)
         REFERENCES schedule_services(schedule_service_pk)
@@ -712,13 +712,13 @@ CREATE TABLE metro_payment_record (
 CREATE TABLE feedback_base (
     feedback_pk BIGSERIAL PRIMARY KEY, -- Surrogate key for feedback identity; feedback_id remains the stable reference for external use.
     feedback_id VARCHAR(20) UNIQUE NOT NULL, -- Business identifier for the feedback, used in external references and user display.
-    user_id VARCHAR(20) NOT NULL,
+    user_profile_id UUID NOT NULL, -- Immutable surrogate FK; user_id remains a display/business identifier in user_profiles.
     rating INTEGER NOT NULL,
     comment TEXT,
     submitted_at TIMESTAMPTZ NOT NULL,
     
-    FOREIGN KEY (user_id)
-        REFERENCES user_profiles(user_id)
+    FOREIGN KEY (user_profile_id)
+        REFERENCES user_profiles(id)
         ON DELETE RESTRICT, -- Feedback should not be deleted when a user is deleted to preserve historical data, but the user can be deactivated instead.
         
     CHECK (rating >= 1 AND rating <= 5),
@@ -755,11 +755,11 @@ CREATE TABLE metro_feedback (
 
 -- Foreign-key indexes support the live-test lookups without changing the
 -- normalised ownership model of the seven business tables.
-CREATE INDEX idx_national_rail_booking_user ON national_rail_booking(user_id);
-CREATE INDEX idx_metro_booking_user ON metro_booking(user_id);
+CREATE INDEX idx_national_rail_booking_user_profile ON national_rail_booking(user_profile_id);
+CREATE INDEX idx_metro_booking_user_profile ON metro_booking(user_profile_id);
 CREATE INDEX idx_national_rail_payment_booking ON national_rail_payment_record(booking_pk);
 CREATE INDEX idx_metro_payment_trip ON metro_payment_record(trip_pk);
-CREATE INDEX idx_feedback_base_user ON feedback_base(user_id);
+CREATE INDEX idx_feedback_base_user_profile ON feedback_base(user_profile_id);
 CREATE INDEX idx_national_rail_feedback_booking ON national_rail_feedback(booking_pk);
 CREATE INDEX idx_metro_feedback_trip ON metro_feedback(trip_pk);
 
