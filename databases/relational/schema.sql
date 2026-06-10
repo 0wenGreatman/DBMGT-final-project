@@ -752,7 +752,7 @@ CREATE TABLE metro_feedback (
         REFERENCES metro_booking(trip_pk)
         ON DELETE RESTRICT -- Trips should not be deleted when feedback is deleted to preserve historical data, but the trip can be cancelled instead.
 );
-git add databases/relational/schema.sql
+
 -- Foreign-key indexes support the live-test lookups without changing the
 -- normalised ownership model of the seven business tables.
 CREATE INDEX idx_national_rail_booking_user ON national_rail_booking(user_id);
@@ -783,4 +783,5 @@ CREATE TABLE IF NOT EXISTS policy_documents (
 );
 
 -- Index for fast cosine similarity search
-CREATE INDEX IF NOT EXISTS ON policy_documents USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_policy_documents_embedding_hnsw
+    ON policy_documents USING hnsw (embedding vector_cosine_ops);
