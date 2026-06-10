@@ -342,7 +342,63 @@ def login_user(email: str, password: str) -> Optional[dict]:
     Verify credentials. Returns a user dict on success or None on failure.
     Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        conn = psycopg2.connect(PG_DSN)
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT p.id as profile_id, p.user_id, p.first_name, p.surname, p.email, 
+                           p.phone, p.date_of_birth, p.is_active, c.password_hash
+                    FROM user_profiles p
+                    JOIN user_credentials c ON p.id = c.user_profile_id
+                    WHERE p.email = %s AND p.deleted_at IS NULL
+                    """,
+                    (email,)
+                )
+                user_row = cur.fetchone()
+                
+                if not user_row:
+                    return None
+                    
+                profile_id = user_row['profile_id']
+                password_hash = user_row['password_hash']
+                is_active = user_row['is_active']
+                
+                is_valid = pwd_context.verify(password, password_hash)
+                
+                if is_valid and is_active:
+                    cur.execute(
+                        "INSERT INTO login_logs (user_profile_id, status) VALUES (%s, 'SUCCESS')",
+                        (profile_id,)
+                    )
+                    conn.commit()
+                    return {
+                        "user_id": user_row["user_id"],
+                        "email": user_row["email"],
+                        "full_name": f"{user_row['first_name']} {user_row['surname']}",
+                        "first_name": user_row["first_name"],
+                        "surname": user_row["surname"],
+                        "phone": user_row["phone"],
+                        "date_of_birth": str(user_row["date_of_birth"]),
+                        "is_active": is_active
+                    }
+                else:
+                    cur.execute(
+                        "INSERT INTO login_logs (user_profile_id, status) VALUES (%s, 'FAILED')",
+                        (profile_id,)
+                    )
+                    conn.commit()
+                    return None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"Login error: {e}")
+        return None
 
 
 def get_user_secret_question(email: str) -> Optional[str]:
