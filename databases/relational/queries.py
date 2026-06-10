@@ -630,7 +630,7 @@ def query_user_bookings(user_email: str) -> dict:
     sql_nr = """
         SELECT
             nb.booking_id,
-            nb.user_id,
+            up.user_id,
             ss.schedule_id,
             ss.line_id,
             ss.service_type,
@@ -649,7 +649,7 @@ def query_user_bookings(user_email: str) -> dict:
             nb.travelled_at
         FROM national_rail_booking nb
         JOIN user_profiles up
-            ON up.user_id = nb.user_id
+            ON up.id = nb.user_profile_id
         JOIN stations origin
             ON origin.station_pk = nb.origin_station_pk
         JOIN stations destination
@@ -667,7 +667,7 @@ def query_user_bookings(user_email: str) -> dict:
     sql_metro = """
         SELECT
             mb.trip_id,
-            mb.user_id,
+            up.user_id,
             ss.schedule_id,
             ss.line_id,
             ss.service_type,
@@ -686,7 +686,7 @@ def query_user_bookings(user_email: str) -> dict:
             mb.travelled_at
         FROM metro_booking mb
         JOIN user_profiles up
-            ON up.user_id = mb.user_id
+            ON up.id = mb.user_profile_id
         JOIN schedule_services ss
             ON ss.schedule_service_pk = mb.schedule_service_pk
         JOIN stations origin
@@ -816,9 +816,14 @@ def execute_booking(
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Verify user exists and is active
-        cur.execute("SELECT user_id FROM user_profiles WHERE user_id = %s AND is_active = TRUE", (user_id,))
-        if not cur.fetchone():
+        cur.execute(
+            "SELECT id FROM user_profiles WHERE user_id = %s AND is_active = TRUE",
+            (user_id,),
+        )
+        user_row = cur.fetchone()
+        if not user_row:
             return False, "User not found or inactive"
+        user_profile_id = user_row["id"]
 
         # Verify schedule exists and is active
         cur.execute("""
@@ -951,15 +956,15 @@ def execute_booking(
 
         cur.execute("""
             INSERT INTO national_rail_booking (
-                booking_id, user_id, origin_station_pk, destination_station_pk,
+                booking_id, user_profile_id, origin_station_pk, destination_station_pk,
                 travel_date, service_departure_pk, ticket_type_pk, amount_usd,
                 status, booked_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING booking_pk, booking_id, user_id, travel_date,
+            RETURNING booking_pk, booking_id, user_profile_id, travel_date,
                       amount_usd, status, booked_at
         """, (
-            booking_id, user_id, origin_station_pk, destination_station_pk,
+            booking_id, user_profile_id, origin_station_pk, destination_station_pk,
             travel_date, service_departure_pk, ticket_type_pk, amount_usd,
             'confirmed', now
         ))
@@ -1053,7 +1058,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             SELECT
                 nrb.booking_pk,
                 nrb.booking_id,
-                nrb.user_id,
+                up.user_id,
                 nrb.amount_usd,
                 nrb.travel_date,
                 nrb.status,
@@ -1064,6 +1069,8 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 )) / 3600 AS hours_until_departure,
                 original_payment.method AS payment_method
             FROM national_rail_booking nrb
+            JOIN user_profiles up
+                ON up.id = nrb.user_profile_id
             JOIN service_departures sd
                 ON sd.service_departure_pk = nrb.service_departure_pk
             JOIN schedule_services ss ON ss.schedule_id = sd.schedule_id
@@ -1152,7 +1159,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             UPDATE national_rail_booking
             SET status = 'cancelled'
             WHERE booking_id = %s
-            RETURNING booking_pk, booking_id, user_id, status
+            RETURNING booking_pk, booking_id, user_profile_id, status
         """, (booking_id,))
         
         cancelled_booking = cur.fetchone()
