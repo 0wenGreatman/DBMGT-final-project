@@ -627,7 +627,90 @@ def query_user_bookings(user_email: str) -> dict:
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql_nr = """
+        SELECT
+            nb.booking_id,
+            nb.user_id,
+            ss.schedule_id,
+            ss.line_id,
+            ss.service_type,
+            ss.direction,
+            origin.station_id AS origin_station_id,
+            origin.station_name AS origin_station_name,
+            destination.station_id AS destination_station_id,
+            destination.station_name AS destination_station_name,
+            nb.travel_date,
+            sd.departure_id,
+            sd.departure_time,
+            tt.ticket_type_id AS ticket_type,
+            nb.amount_usd,
+            nb.status,
+            nb.booked_at,
+            nb.travelled_at
+        FROM national_rail_booking nb
+        JOIN user_profiles up
+            ON up.user_id = nb.user_id
+        JOIN stations origin
+            ON origin.station_pk = nb.origin_station_pk
+        JOIN stations destination
+            ON destination.station_pk = nb.destination_station_pk
+        JOIN service_departures sd
+            ON sd.service_departure_pk = nb.departure_pk
+        JOIN schedule_services ss
+            ON ss.schedule_id = sd.schedule_id
+        JOIN ticket_types tt
+            ON tt.ticket_type_pk = nb.ticket_type_pk
+        WHERE up.email = %s
+        ORDER BY nb.travel_date DESC, nb.booked_at DESC;
+    """
+
+    sql_metro = """
+        SELECT
+            mb.trip_id,
+            mb.user_id,
+            ss.schedule_id,
+            ss.line_id,
+            ss.service_type,
+            ss.direction,
+            origin.station_id AS origin_station_id,
+            origin.station_name AS origin_station_name,
+            destination.station_id AS destination_station_id,
+            destination.station_name AS destination_station_name,
+            mb.travel_date,
+            tt.ticket_type_id AS ticket_type,
+            mb.day_pass_ref,
+            mb.stops_travelled,
+            mb.amount_usd,
+            mb.status,
+            mb.purchased_at,
+            mb.travelled_at
+        FROM metro_booking mb
+        JOIN user_profiles up
+            ON up.user_id = mb.user_id
+        JOIN schedule_services ss
+            ON ss.schedule_service_pk = mb.schedule_service_pk
+        JOIN stations origin
+            ON origin.station_pk = mb.origin_station_pk
+        JOIN stations destination
+            ON destination.station_pk = mb.destination_station_pk
+        JOIN ticket_types tt
+            ON tt.ticket_type_pk = mb.ticket_type_pk
+        WHERE up.email = %s
+        ORDER BY mb.travel_date DESC, mb.purchased_at DESC;
+    """
+
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql_nr, (user_email,))
+            national_rail = [_row_to_dict(row) for row in cur.fetchall()]
+
+            cur.execute(sql_metro, (user_email,))
+            metro = [_row_to_dict(row) for row in cur.fetchall()]
+
+    return {
+        "national_rail": national_rail,
+        "metro": metro,
+    }
 
 
 def query_payment_info(booking_id: str) -> Optional[dict]:
