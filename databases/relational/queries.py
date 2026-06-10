@@ -463,7 +463,35 @@ def verify_secret_answer(email: str, answer: str) -> bool:
 
 def update_password(email: str, new_password: str) -> bool:
     """Update the password for a user. Returns True if the row was updated."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        password_hash = pwd_context.hash(new_password)
+        algo_name = pwd_context.identify(password_hash)
+        if not algo_name:
+            algo_name = "unknown"
+            
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_credentials
+                    SET password_hash = %s,
+                        hash_algorithm = %s,
+                        password_updated_at = NOW()
+                    WHERE user_profile_id = (
+                        SELECT id FROM user_profiles
+                        WHERE email = %s AND deleted_at IS NULL
+                    )
+                    """,
+                    (password_hash, algo_name, email)
+                )
+                
+                return cur.rowcount > 0
+    except Exception as e:
+        print(f"Error updating password: {e}")
+        return False
 
 
 # ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────
