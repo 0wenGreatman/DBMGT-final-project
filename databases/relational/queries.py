@@ -184,7 +184,33 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 
 def query_user_profile(user_email: str) -> Optional[dict]:
     """Return a user's profile by email."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, first_name, surname, email, phone, date_of_birth, is_active
+                    FROM user_profiles
+                    WHERE email = %s AND deleted_at IS NULL
+                    """,
+                    (user_email,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "user_id": row["user_id"],
+                        "email": row["email"],
+                        "full_name": f"{row['first_name']} {row['surname']}",
+                        "first_name": row["first_name"],
+                        "surname": row["surname"],
+                        "phone": row["phone"],
+                        "date_of_birth": str(row["date_of_birth"]),
+                        "is_active": row["is_active"]
+                    }
+                return None
+    except Exception as e:
+        print(f"Error fetching user profile: {e}")
+        return None
 
 
 def query_user_bookings(user_email: str) -> dict:
@@ -412,7 +438,7 @@ def get_user_secret_question(email: str) -> Optional[str]:
                     FROM user_profiles p
                     JOIN user_credentials c ON p.id = c.user_profile_id
                     JOIN security_questions sq ON c.security_question_id = sq.id
-                    WHERE p.email = %s AND p.deleted_at IS NULL
+                    WHERE p.email = %s AND p.deleted_at IS NULL AND p.is_active = TRUE
                     """,
                     (email,)
                 )
@@ -438,7 +464,7 @@ def verify_secret_answer(email: str, answer: str) -> bool:
                     SELECT c.secret_answer_hash
                     FROM user_profiles p
                     JOIN user_credentials c ON p.id = c.user_profile_id
-                    WHERE p.email = %s AND p.deleted_at IS NULL
+                    WHERE p.email = %s AND p.deleted_at IS NULL AND p.is_active = TRUE
                     """,
                     (email,)
                 )
@@ -482,7 +508,7 @@ def update_password(email: str, new_password: str) -> bool:
                         password_updated_at = NOW()
                     WHERE user_profile_id = (
                         SELECT id FROM user_profiles
-                        WHERE email = %s AND deleted_at IS NULL
+                        WHERE email = %s AND deleted_at IS NULL AND is_active = TRUE
                     )
                     """,
                     (password_hash, algo_name, email)
