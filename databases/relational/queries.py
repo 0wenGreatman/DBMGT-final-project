@@ -969,6 +969,7 @@ def execute_booking(
             conn.close()
 
 
+
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
     """
     Cancel a national rail booking owned by the given user.
@@ -985,7 +986,154 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         (True, result_dict)  with refund_amount_usd and policy note
         (False, error_msg)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = None
+    try:
+        conn = psycopg2.connect(PG_DSN)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Fetch booking details and verify ownership
+        cur.execute("""
+            SELECT
+                nrb.booking_pk,
+                nrb.booking_id,
+                nrb.user_id,
+                nrb.amount_usd,
+                nrb.travel_date,
+                nrb.status,
+                nrb.booked_at,
+                ss.service_type
+            FROM national_rail_booking nrb
+            JOIN service_departures sd ON sd.departure_id = nrb.departure_id
+            JOIN schedule_services ss ON ss.schedule_id = sd.schedule_id
+            WHERE nrb.booking_id = %s
+        """, (booking_id,))
+        booking = cur.fetchone()
+
+        if not booking:
+            return False, f"Booking {booking_id} not found"
+
+        # Verify user ownership
+        if booking['user_id'] != user_id:
+            return False, "Booking does not belong to this user"
+
+        # Check if booking can be cancelled
+        if booking['status'] not in ('confirmed', 'completed'):
+            return False, f"Cannot cancel booking with status '{booking['status']}'"
+
+        # Calculate days until departure
+        travel_date = booking['travel_date']
+        today = date.today()
+        days_until_departure = (travel_date - today).days
+
+        # Determine refund policy and percentage based on service type and timing
+        service_type = booking['service_type']
+        
+        if service_type in ('normal',):
+            # RF001: Normal service refund windows
+            if days_until_departure >= 7:
+                refund_percentage = 100
+                policy_note = "RF001: 7+ days before departure (100% refund)"
+            elif days_until_departure >= 3:
+                refund_percentage = 75
+                policy_note = "RF001: 3-7 days before departure (75% refund)"
+            elif days_until_departure >= 1:
+                refund_percentage = 50
+                policy_note = "RF001: 1-3 days before departure (50% refund)"
+            else:
+                refund_percentage = 0
+                policy_note = "RF001: Less than 1 day before departure (0% refund)"
+        
+        elif service_type in ('express',):
+            # RF002: Express service refund windows
+            if days_until_departure >= 3:
+                refund_percentage = 100
+                policy_note = "RF002: 3+ days before departure (100% refund)"
+            elif days_until_departure >= 1:
+                refund_percentage = 50
+                policy_note = "RF002: 1-3 days before departure (50% refund)"
+            else:
+                refund_percentage = 0
+                policy_note = "RF002: Less than 1 day before departure (0% refund)"
+        
+        else:
+            # Default policy for unknown service types
+            refund_percentage = 50
+            policy_note = f"Default policy: 50% refund for {service_type} service"
+
+        # Calculate refund amount
+        refund_amount = booking['amount_usd'] * Decimal(refund_percentage) / 100
+
+        # Update booking status to cancelled
+        now = datetime.now(timezone.utc)
+        cur.execute("""
+            UPDATE national_rail_booking
+            SET status = 'cancelled'
+            WHERE booking_id = %s
+            RETURNING booking_pk, booking_id, user_id, status
+        """, (booking_id,))
+        
+        cancelled_booking = cur.fetchone()
+        if not cancelled_booking:
+            conn.rollback()
+            return False, "Failed to update booking status"
+
+        # Release seat reservations for this booking
+        cur.execute("""
+            UPDATE seat_reservations
+            SET reservation_status = 'cancelled'
+            WHERE booking_id = %s
+              AND reservation_status IN ('held', 'confirmed')
+        """, (booking_id,))
+
+        # Generate refund payment record if refund amount > 0
+        if refund_amount > 0:
+            refund_payment_id = _gen_payment_id()
+            cur.execute("""
+                INSERT INTO payment_record (
+                    payment_id, amount_usd, method, status, paid_at
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING payment_pk
+            """, (
+                refund_payment_id,
+                refund_amount,
+                'refund',
+                'paid',
+                now
+            ))
+            
+            refund_payment = cur.fetchone()
+            if refund_payment:
+                # Link refund to the original booking
+                cur.execute("""
+                    INSERT INTO national_rail_payment_record (payment_pk, booking_id)
+                    VALUES (%s, %s)
+                """, (refund_payment['payment_pk'], booking_id))
+
+        conn.commit()
+        
+        # Return cancellation result
+        result = {
+            'booking_id': booking_id,
+            'original_amount_usd': float(booking['amount_usd']),
+            'refund_percentage': refund_percentage,
+            'refund_amount_usd': float(refund_amount),
+            'policy_note': policy_note,
+            'cancelled_at': now.isoformat(),
+            'days_until_departure': days_until_departure
+        }
+        
+        return True, result
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"Cancellation failed: {str(e)}"
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
