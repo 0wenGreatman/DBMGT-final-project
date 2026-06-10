@@ -837,6 +837,7 @@ def seed_users(cur):
 def seed_national_rail_bookings(cur):
     data = load("bookings.json")
 
+    user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
     station_map = _fetch_map(cur, "stations", "station_id", "station_pk")
     departure_map = _fetch_map(cur, "service_departures", "departure_id", "service_departure_pk")
     ticket_type_map = _fetch_map(cur, "ticket_types", "ticket_type_id", "ticket_type_pk")
@@ -849,7 +850,7 @@ def seed_national_rail_bookings(cur):
         rows.append(
             (
                 item["booking_id"],
-                item["user_id"],
+                user_map[item["user_id"]],
                 station_map[item["origin_station_id"]],
                 station_map[item["destination_station_id"]],
                 item["travel_date"],
@@ -867,7 +868,7 @@ def seed_national_rail_bookings(cur):
         "national_rail_booking",
         [
             "booking_id",
-            "user_id",
+            "user_profile_id",
             "origin_station_pk",
             "destination_station_pk",
             "travel_date",
@@ -885,6 +886,7 @@ def seed_national_rail_bookings(cur):
 def seed_metro_travels(cur):
     data = load("metro_travel_history.json")
 
+    user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
     schedule_map = _fetch_map(cur, "schedule_services", "schedule_id", "schedule_service_pk")
     station_map = _fetch_map(cur, "stations", "station_id", "station_pk")
     ticket_type_map = _fetch_map(cur, "ticket_types", "ticket_type_id", "ticket_type_pk")
@@ -894,7 +896,7 @@ def seed_metro_travels(cur):
     for item in data:
         row = (
             item["trip_id"],
-            item["user_id"],
+            user_map[item["user_id"]],
             schedule_map[item["schedule_id"]],
             station_map[item["origin_station_id"]],
             station_map[item["destination_station_id"]],
@@ -917,7 +919,7 @@ def seed_metro_travels(cur):
         "metro_booking",
         [
             "trip_id",
-            "user_id",
+            "user_profile_id",
             "schedule_service_pk",
             "origin_station_pk",
             "destination_station_pk",
@@ -939,7 +941,7 @@ def seed_metro_travels(cur):
             "metro_booking",
             [
                 "trip_id",
-                "user_id",
+                "user_profile_id",
                 "schedule_service_pk",
                 "origin_station_pk",
                 "destination_station_pk",
@@ -1021,13 +1023,14 @@ def seed_payments(cur):
 
 def seed_feedback(cur):
     data = load("feedback.json")
+    user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
 
     base_rows = []
     for item in data:
         base_rows.append(
             (
                 item["feedback_id"],
-                item.get("user_id"),
+                user_map[item["user_id"]],
                 item.get("rating"),
                 item.get("comment"),
                 item.get("submitted_at"),
@@ -1037,7 +1040,7 @@ def seed_feedback(cur):
     insert_many(
         cur,
         "feedback_base",
-        ["feedback_id", "user_id", "rating", "comment", "submitted_at"],
+        ["feedback_id", "user_profile_id", "rating", "comment", "submitted_at"],
         base_rows,
     )
 
