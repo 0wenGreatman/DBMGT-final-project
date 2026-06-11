@@ -1139,7 +1139,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             LEFT JOIN seat_reservations sr
                 ON sr.booking_id = nrb.booking_id
             WHERE (nrb.booking_id = %s OR nrb.booking_pk::text = %s)
-            FOR UPDATE OF nrb, sr
+            FOR UPDATE OF nrb
         """, (booking_id, booking_id))
         booking = cur.fetchone()
 
@@ -1219,9 +1219,9 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         cur.execute("""
             UPDATE national_rail_booking
             SET status = 'cancelled'
-            WHERE booking_id = %s
+            WHERE booking_pk = %s
             RETURNING booking_pk, booking_id, user_profile_id, status
-        """, (booking_id,))
+        """, (booking['booking_pk'],))
         
         cancelled_booking = cur.fetchone()
         if not cancelled_booking:
@@ -1234,7 +1234,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             SET reservation_status = 'cancelled'
             WHERE booking_id = %s
               AND reservation_status IN ('held', 'confirmed')
-        """, (booking_id,))
+        """, (booking['booking_id'],))
 
         # Generate refund payment record if refund amount > 0
         if refund_amount > 0:
@@ -1268,7 +1268,8 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         
         # Return cancellation result
         result = {
-            'booking_id': booking_id,
+            'booking_id': booking['booking_id'],
+            'status': cancelled_booking['status'],
             'original_amount_usd': float(booking['amount_usd']),
             'refund_percentage': refund_percentage,
             'admin_fee_usd': float(admin_fee),
