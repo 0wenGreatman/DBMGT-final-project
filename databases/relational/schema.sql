@@ -269,8 +269,7 @@ CREATE TABLE IF NOT EXISTS schedule_operating_days (
 
 -- Concrete train departures generated from a schedule for a service date.
 CREATE TABLE IF NOT EXISTS service_departures (
-    service_departure_pk BIGSERIAL PRIMARY KEY, -- BIGSERIAL supports many concrete departures while departure_id remains a stable reference.
-    departure_id VARCHAR(30) UNIQUE NOT NULL,
+    service_departure_pk BIGSERIAL PRIMARY KEY, -- BIGSERIAL supports many concrete departures derived from schedule/date/time.
     schedule_id VARCHAR(20) NOT NULL,
     service_date DATE NOT NULL,
     departure_time TIME NOT NULL,
@@ -349,8 +348,7 @@ CREATE TABLE IF NOT EXISTS fare_classes (
 
 -- Pricing rules. Monetary values use DECIMAL USD values, not FLOAT.
 CREATE TABLE IF NOT EXISTS fare_rules (
-    fare_rule_pk SERIAL PRIMARY KEY, -- Surrogate key keeps joins compact; fare_rule_code preserves the stable seed identifier.
-    fare_rule_code VARCHAR(30) NOT NULL UNIQUE,
+    fare_rule_pk SERIAL PRIMARY KEY, -- Surrogate key is enough because fare rows are uniquely identified by the rule attributes below.
 
     network_id CHAR(1) NOT NULL,
     schedule_id VARCHAR(20),
@@ -533,7 +531,7 @@ CREATE TABLE IF NOT EXISTS seats (
 CREATE TABLE IF NOT EXISTS seat_reservations (
     seat_reservation_pk UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- UUID suits runtime-created reservation rows and avoids predictable identifiers.
 
-    departure_id VARCHAR(30) NOT NULL,
+    service_departure_pk BIGINT NOT NULL,
     seat_pk INTEGER NOT NULL,
     booking_id VARCHAR(30) NOT NULL,
 
@@ -550,8 +548,8 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (departure_id)
-        REFERENCES service_departures(departure_id)
+    FOREIGN KEY (service_departure_pk)
+        REFERENCES service_departures(service_departure_pk)
         ON DELETE RESTRICT,
 
     FOREIGN KEY (seat_pk)

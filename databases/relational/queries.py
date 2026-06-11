@@ -170,7 +170,7 @@ def query_national_rail_availability(
             stop_list.stops_in_order,
             stop_list.station_names_in_order,
             COALESCE(fare_info.fare_classes, '[]'::json) AS fare_classes,
-            departure_info.departure_id,
+            departure_info.service_departure_pk,
             COALESCE(departure_info.departure_time, c.first_train_time) AS departure_time,
             COALESCE(departure_info.departure_status, 'timetable') AS departure_status,
             COALESCE(seat_info.total_seats, 0) AS total_seats,
@@ -209,7 +209,7 @@ def query_national_rail_availability(
         ) fare_info ON TRUE
         LEFT JOIN LATERAL (
             SELECT
-                sd.departure_id,
+                sd.service_departure_pk,
                 sd.departure_time,
                 sd.status AS departure_status
             FROM service_departures sd
@@ -232,7 +232,7 @@ def query_national_rail_availability(
                 ON s.coach_pk = co.coach_pk
                AND s.is_active = TRUE
             LEFT JOIN seat_reservations sr
-                ON sr.departure_id = departure_info.departure_id
+                ON sr.service_departure_pk = departure_info.service_departure_pk
                AND sr.seat_pk = s.seat_pk
                AND sr.reservation_status IN ('held', 'confirmed', 'completed')
                AND (
@@ -281,7 +281,7 @@ def query_national_rail_fare(
 
     sql = """
         SELECT
-            fare_rule_code AS fare_rule_id,
+            fare_rule_pk AS fare_rule_id,
             fare_class_id AS fare_class,
             base_fare_usd,
             per_stop_rate_usd,
@@ -427,7 +427,7 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
 
     sql = """
         SELECT
-            fare_rule_code AS fare_rule_id,
+            fare_rule_pk AS fare_rule_id,
             base_fare_usd,
             per_stop_rate_usd,
             currency
@@ -483,12 +483,12 @@ def query_available_seats(
             s.seat_row AS row,
             s.seat_column AS column,
             c.fare_class_id AS fare_class,
-            cd.departure_id,
+            cd.service_departure_pk,
             cd.departure_time
         FROM seat_layouts sl
         LEFT JOIN LATERAL (
             SELECT
-                departure_id,
+                service_departure_pk,
                 departure_time
             FROM service_departures
             WHERE schedule_id = sl.schedule_id
@@ -505,7 +505,7 @@ def query_available_seats(
             ON s.coach_pk = c.coach_pk
            AND s.is_active = TRUE
         LEFT JOIN seat_reservations sr
-            ON sr.departure_id = cd.departure_id
+            ON sr.service_departure_pk = cd.service_departure_pk
            AND sr.seat_pk = s.seat_pk
            AND sr.reservation_status IN ('held', 'confirmed', 'completed')
            AND (
@@ -666,7 +666,7 @@ def query_user_bookings(user_email: str) -> dict:
             destination.station_id AS destination_station_id,
             destination.station_name AS destination_station_name,
             nb.travel_date,
-            sd.departure_id,
+            sd.service_departure_pk,
             sd.departure_time,
             tt.ticket_type_id AS ticket_type,
             nb.amount_usd,
@@ -900,7 +900,7 @@ def execute_booking(
 
         # Query departure for the requested travel date
         cur.execute("""
-            SELECT service_departure_pk, departure_id, departure_time
+            SELECT service_departure_pk, departure_time
             FROM service_departures
             WHERE schedule_id = %s
               AND service_date = %s::date
@@ -911,7 +911,6 @@ def execute_booking(
         departure_row = cur.fetchone()
         if not departure_row:
             return False, "No available departure for this date"
-        departure_id = departure_row['departure_id']
         service_departure_pk = departure_row['service_departure_pk']
 
         # Verify ticket type exists in the system
@@ -966,13 +965,13 @@ def execute_booking(
         # Check if seat is already reserved on this departure
         cur.execute("""
             SELECT seat_reservation_pk FROM seat_reservations
-            WHERE departure_id = %s
+            WHERE service_departure_pk = %s
               AND seat_pk = %s
               AND reservation_status IN ('held', 'confirmed', 'completed')
               AND (reservation_status <> 'held' 
                    OR held_until IS NULL 
                    OR held_until > CURRENT_TIMESTAMP)
-        """, (departure_id, seat_pk))
+        """, (service_departure_pk, seat_pk))
         if cur.fetchone():
             return False, f"Seat {seat_id} is already reserved"
 
@@ -1003,13 +1002,13 @@ def execute_booking(
         # Create seat reservation with confirmed status
         cur.execute("""
             INSERT INTO seat_reservations (
-                departure_id, seat_pk, booking_id, origin_station_id,
+                service_departure_pk, seat_pk, booking_id, origin_station_id,
                 destination_station_id, origin_stop_sequence, destination_stop_sequence,
                 reservation_status
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
-            departure_id, seat_pk, booking_id, origin_station_id,
+            service_departure_pk, seat_pk, booking_id, origin_station_id,
             destination_station_id, origin_seq, dest_seq, 'confirmed'
         ))
 
@@ -1036,7 +1035,7 @@ def execute_booking(
             "schedule_id": schedule_id,
             "origin_station_id": origin_station_id,
             "destination_station_id": destination_station_id,
-            "departure_id": departure_id,
+            "service_departure_pk": service_departure_pk,
             "ticket_type": ticket_type,
             "fare_class": fare_class,
             "seat_id": seat_id,

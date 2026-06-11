@@ -155,18 +155,6 @@ def _seed_ticket_catalog(cur):
     )
 
 
-def _departure_id(schedule_id, service_date, departure_time):
-    """Build a compact service departure ID that also fits booking FKs."""
-    schedule_key = (
-        schedule_id
-        .replace("NR_SCH", "N")
-        .replace("MS_SCH", "M")
-    )
-    date_key = service_date[2:].replace("-", "")
-    time_key = departure_time.replace(":", "")
-    return f"D_{schedule_key}_{date_key}_{time_key}"
-
-
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
@@ -363,7 +351,6 @@ def seed_metro_schedules(cur):
 
     fare_rows = [
         (
-            f"FR_{item['schedule_id']}_SINGLE",
             NETWORK_IDS["metro"],
             item["schedule_id"],
             "single",
@@ -384,7 +371,6 @@ def seed_metro_schedules(cur):
     )
     fare_rows.append(
         (
-            "FR_M_DAY_PASS",
             NETWORK_IDS["metro"],
             None,
             "day_pass",
@@ -401,7 +387,6 @@ def seed_metro_schedules(cur):
         cur,
         "fare_rules",
         [
-            "fare_rule_code",
             "network_id",
             "schedule_id",
             "ticket_type_id",
@@ -514,10 +499,6 @@ def seed_national_rail_schedules(cur):
             ):
                 fare_rows.append(
                     (
-                        (
-                            f"FR_{item['schedule_id']}_"
-                            f"{ticket_type_id.upper()}_{fare_class_id.upper()}"
-                        ),
                         NETWORK_IDS["national_rail"],
                         item["schedule_id"],
                         ticket_type_id,
@@ -534,7 +515,6 @@ def seed_national_rail_schedules(cur):
         cur,
         "fare_rules",
         [
-            "fare_rule_code",
             "network_id",
             "schedule_id",
             "ticket_type_id",
@@ -558,11 +538,6 @@ def seed_service_departures(cur):
     departure_rows = sorted(
         {
             (
-                _departure_id(
-                    item["schedule_id"],
-                    item["travel_date"],
-                    item["departure_time"],
-                ),
                 item["schedule_id"],
                 item["travel_date"],
                 item["departure_time"],
@@ -575,7 +550,6 @@ def seed_service_departures(cur):
         cur,
         "service_departures",
         [
-            "departure_id",
             "schedule_id",
             "service_date",
             "departure_time",
@@ -673,6 +647,17 @@ def seed_seat_reservations(cur):
 
     cur.execute(
         """
+        SELECT service_departure_pk, schedule_id, service_date, departure_time
+        FROM service_departures
+        """
+    )
+    departure_pk_by_service = {
+        (schedule_id, str(service_date), departure_time.strftime("%H:%M")): departure_pk
+        for departure_pk, schedule_id, service_date, departure_time in cur.fetchall()
+    }
+
+    cur.execute(
+        """
         SELECT s.seat_pk, sl.schedule_id, c.coach_code, s.seat_code
         FROM seats s
         JOIN coaches c
@@ -724,13 +709,18 @@ def seed_seat_reservations(cur):
                 f"{schedule_id}/{item['coach']}/{item['seat_id']}"
             )
 
+        service_departure_pk = departure_pk_by_service.get(
+            (schedule_id, item["travel_date"], item["departure_time"])
+        )
+        if service_departure_pk is None:
+            raise ValueError(
+                f"No departure found for booking {booking_id}: "
+                f"{schedule_id}/{item['travel_date']}/{item['departure_time']}"
+            )
+
         reservation_rows.append(
             (
-                _departure_id(
-                    schedule_id,
-                    item["travel_date"],
-                    item["departure_time"],
-                ),
+                service_departure_pk,
                 seat_pk,
                 booking_id,
                 origin_station_id,
@@ -746,7 +736,7 @@ def seed_seat_reservations(cur):
         cur,
         "seat_reservations",
         [
-            "departure_id",
+            "service_departure_pk",
             "seat_pk",
             "booking_id",
             "origin_station_id",
@@ -846,14 +836,23 @@ def seed_national_rail_bookings(cur):
 
     user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
     station_map = _fetch_map(cur, "stations", "station_id", "station_pk")
-    departure_map = _fetch_map(cur, "service_departures", "departure_id", "service_departure_pk")
     ticket_type_map = _fetch_map(cur, "ticket_types", "ticket_type_id", "ticket_type_pk")
+    cur.execute(
+        """
+        SELECT service_departure_pk, schedule_id, service_date, departure_time
+        FROM service_departures
+        """
+    )
+    departure_pk_by_service = {
+        (schedule_id, str(service_date), departure_time.strftime("%H:%M")): departure_pk
+        for departure_pk, schedule_id, service_date, departure_time in cur.fetchall()
+    }
 
     rows = []
     for item in data:
-        departure_id = _departure_id(
-            item["schedule_id"], item["travel_date"], item["departure_time"]
-        )
+        service_departure_pk = departure_pk_by_service[
+            (item["schedule_id"], item["travel_date"], item["departure_time"])
+        ]
         rows.append(
             (
                 item["booking_id"],
@@ -861,7 +860,7 @@ def seed_national_rail_bookings(cur):
                 station_map[item["origin_station_id"]],
                 station_map[item["destination_station_id"]],
                 item["travel_date"],
-                departure_map[departure_id],
+                service_departure_pk,
                 ticket_type_map[item["ticket_type"]],
                 _usd(item.get("amount_usd")),
                 item.get("status"),
