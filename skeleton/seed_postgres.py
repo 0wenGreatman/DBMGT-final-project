@@ -771,18 +771,25 @@ def seed_users(cur):
     q_map = {row[1]: row[0] for row in cur.fetchall()}
     
     # Process and insert user_profiles
-    user_rows = [(
-        u["user_id"],
-        u["full_name"],
-        u["email"],
-        u["phone"],
-        u["date_of_birth"],
-        u["registered_at"],
-        u.get("is_active", True)
-    ) for u in data]
+    user_rows = []
+    for u in data:
+        name_parts = u["full_name"].split(" ", 1)
+        first_name = name_parts[0]
+        surname = name_parts[1] if len(name_parts) > 1 else ""
+        
+        user_rows.append((
+            u["user_id"],
+            first_name,
+            surname,
+            u["email"],
+            u["phone"],
+            u["date_of_birth"],
+            u["registered_at"],
+            u.get("is_active", True)
+        ))
     
     insert_many(cur, "user_profiles", 
-        ["user_id", "full_name", "email", "phone", "date_of_birth", "registered_at", "is_active"], 
+        ["user_id", "first_name", "surname", "email", "phone", "date_of_birth", "registered_at", "is_active"], 
         user_rows)
         
     # Get DB-generated UUIDs for subsequent associations

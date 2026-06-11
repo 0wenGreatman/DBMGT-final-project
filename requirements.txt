@@ -17,3 +17,5 @@ python-dotenv>=1.0.0         # Load .env file
 
 # Password hashing
 argon2-cffi>=21.3.0
+passlib>=1.7.4
+bcrypt>=4.0.1

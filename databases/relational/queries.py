@@ -617,7 +617,33 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 
 def query_user_profile(user_email: str) -> Optional[dict]:
     """Return a user's profile by email."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, first_name, surname, email, phone, date_of_birth, is_active
+                    FROM user_profiles
+                    WHERE email = %s AND deleted_at IS NULL
+                    """,
+                    (user_email,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "user_id": row["user_id"],
+                        "email": row["email"],
+                        "full_name": f"{row['first_name']} {row['surname']}",
+                        "first_name": row["first_name"],
+                        "surname": row["surname"],
+                        "phone": row["phone"],
+                        "date_of_birth": str(row["date_of_birth"]),
+                        "is_active": row["is_active"]
+                    }
+                return None
+    except Exception as e:
+        print(f"Error fetching user profile: {e}")
+        return None
 
 
 def query_user_bookings(user_email: str) -> dict:
@@ -1245,11 +1271,74 @@ def register_user(
     """
     Register a new user.
     Returns (True, user_id) on success or (False, error_message) on failure.
-
-    NOTE: passwords are stored as plain text here intentionally for teaching
-    purposes. In production, replace with a salted hash (e.g. bcrypt).
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        
+        # Configure passlib to use argon2id by default, but support others
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        # Hash the password and secret answer
+        password_hash = pwd_context.hash(password)
+        secret_answer_hash = pwd_context.hash(secret_answer)
+        
+        # Dynamically identify the algorithm used
+        algo_name = pwd_context.identify(password_hash)
+        if not algo_name:
+            algo_name = "unknown"
+            
+        # Default phone as it's not requested by UI
+        phone = "0000000000"
+        date_of_birth = f"{year_of_birth}-01-01"
+        user_id = f"RU-{''.join(random.choices(string.digits, k=6))}"
+        
+        conn = psycopg2.connect(PG_DSN)
+        try:
+            with conn.cursor() as cur:
+                # Get or create security question
+                cur.execute("SELECT id FROM security_questions WHERE question_text = %s", (secret_question,))
+                sq_row = cur.fetchone()
+                if sq_row:
+                    sq_id = sq_row[0]
+                else:
+                    cur.execute("INSERT INTO security_questions (question_text) VALUES (%s) RETURNING id", (secret_question,))
+                    sq_id = cur.fetchone()[0]
+                
+                # Insert user profile
+                cur.execute(
+                    """
+                    INSERT INTO user_profiles (user_id, first_name, surname, email, phone, date_of_birth)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id, user_id
+                    """,
+                    (user_id, first_name, surname, email, phone, date_of_birth)
+                )
+                profile_row = cur.fetchone()
+                profile_uuid = profile_row[0]
+                final_user_id = profile_row[1]
+                
+                # Insert user credentials
+                cur.execute(
+                    """
+                    INSERT INTO user_credentials (user_profile_id, password_hash, hash_algorithm, security_question_id, secret_answer_hash)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (profile_uuid, password_hash, algo_name, sq_id, secret_answer_hash)
+                )
+            conn.commit()
+            return True, final_user_id
+        except psycopg2.IntegrityError as e:
+            conn.rollback()
+            if "email" in str(e).lower():
+                return False, "Email already registered."
+            return False, f"Database integrity error: {e}"
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            conn.close()
+    except Exception as e:
+        return False, str(e)
 
 
 def login_user(email: str, password: str) -> Optional[dict]:
@@ -1257,22 +1346,156 @@ def login_user(email: str, password: str) -> Optional[dict]:
     Verify credentials. Returns a user dict on success or None on failure.
     Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        conn = psycopg2.connect(PG_DSN)
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT p.id as profile_id, p.user_id, p.first_name, p.surname, p.email, 
+                           p.phone, p.date_of_birth, p.is_active, c.password_hash
+                    FROM user_profiles p
+                    JOIN user_credentials c ON p.id = c.user_profile_id
+                    WHERE p.email = %s AND p.deleted_at IS NULL
+                    """,
+                    (email,)
+                )
+                user_row = cur.fetchone()
+                
+                if not user_row:
+                    return None
+                    
+                profile_id = user_row['profile_id']
+                password_hash = user_row['password_hash']
+                is_active = user_row['is_active']
+                
+                is_valid = pwd_context.verify(password, password_hash)
+                
+                if is_valid and is_active:
+                    cur.execute(
+                        "INSERT INTO login_logs (user_profile_id, status) VALUES (%s, 'SUCCESS')",
+                        (profile_id,)
+                    )
+                    conn.commit()
+                    return {
+                        "user_id": user_row["user_id"],
+                        "email": user_row["email"],
+                        "full_name": f"{user_row['first_name']} {user_row['surname']}",
+                        "first_name": user_row["first_name"],
+                        "surname": user_row["surname"],
+                        "phone": user_row["phone"],
+                        "date_of_birth": str(user_row["date_of_birth"]),
+                        "is_active": is_active
+                    }
+                else:
+                    cur.execute(
+                        "INSERT INTO login_logs (user_profile_id, status) VALUES (%s, 'FAILED')",
+                        (profile_id,)
+                    )
+                    conn.commit()
+                    return None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"Login error: {e}")
+        return None
 
 
 def get_user_secret_question(email: str) -> Optional[str]:
     """Return the secret question for a registered email, or None if not found."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT sq.question_text
+                    FROM user_profiles p
+                    JOIN user_credentials c ON p.id = c.user_profile_id
+                    JOIN security_questions sq ON c.security_question_id = sq.id
+                    WHERE p.email = %s AND p.deleted_at IS NULL AND p.is_active = TRUE
+                    """,
+                    (email,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return row["question_text"]
+                return None
+    except Exception as e:
+        print(f"Error fetching secret question: {e}")
+        return None
 
 
 def verify_secret_answer(email: str, answer: str) -> bool:
     """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.secret_answer_hash
+                    FROM user_profiles p
+                    JOIN user_credentials c ON p.id = c.user_profile_id
+                    WHERE p.email = %s AND p.deleted_at IS NULL AND p.is_active = TRUE
+                    """,
+                    (email,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                
+                secret_answer_hash = row[0]
+                
+                # Check exact match
+                if pwd_context.verify(answer, secret_answer_hash):
+                    return True
+                # Check lowercase match for case-insensitivity support
+                if pwd_context.verify(answer.lower(), secret_answer_hash):
+                    return True
+                
+                return False
+    except Exception as e:
+        print(f"Error verifying secret answer: {e}")
+        return False
 
 
 def update_password(email: str, new_password: str) -> bool:
     """Update the password for a user. Returns True if the row was updated."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["argon2", "bcrypt", "pbkdf2_sha256"], deprecated="auto")
+        
+        password_hash = pwd_context.hash(new_password)
+        algo_name = pwd_context.identify(password_hash)
+        if not algo_name:
+            algo_name = "unknown"
+            
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_credentials
+                    SET password_hash = %s,
+                        hash_algorithm = %s,
+                        password_updated_at = NOW()
+                    WHERE user_profile_id = (
+                        SELECT id FROM user_profiles
+                        WHERE email = %s AND deleted_at IS NULL AND is_active = TRUE
+                    )
+                    """,
+                    (password_hash, algo_name, email)
+                )
+                
+                return cur.rowcount > 0
+    except Exception as e:
+        print(f"Error updating password: {e}")
+        return False
 
 
 # ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────

@@ -31,18 +31,28 @@
 -- Ensure UUID generation functions are available in older PostgreSQL versions
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- ============================================================
+--  USER DATA
+-- ============================================================
+
 -- Table: user_profiles
 -- Stores the primary contact information and lifecycle state for users.
 CREATE TABLE user_profiles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Serves as the surrogate primary key for underlying database relations.
     user_id VARCHAR(50) UNIQUE NOT NULL,            -- Acts as the business identifier for frontend display and external services (e.g., RU01).
-    full_name VARCHAR(100) NOT NULL,                -- User's full legal name.
+    first_name VARCHAR(50) NOT NULL,                -- User's first name.
+    surname VARCHAR(50) NOT NULL,                   -- User's surname.
     email VARCHAR(255) UNIQUE NOT NULL,             -- Potential login identification.
     phone VARCHAR(50) NOT NULL,                     
     date_of_birth DATE NOT NULL,                    
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Records the exact time the account was created.
     is_active BOOLEAN NOT NULL DEFAULT TRUE,          -- Indicates whether the account is active and permitted to access the system.
-    deleted_at TIMESTAMPTZ                            -- Acts as a soft-deletion marker to maintain referential integrity.
+    deleted_at TIMESTAMPTZ,                           -- Acts as a soft-deletion marker to maintain referential integrity.
+    
+    -- Data Integrity Constraints
+    CONSTRAINT chk_email_format CHECK (email ~* '^[A-Za-z0-9._+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]+$'),
+    CONSTRAINT chk_phone_format CHECK (phone ~ '^[0-9\+\-\(\)\s]{7,20}$'),
+    CONSTRAINT chk_dob_past CHECK (date_of_birth <= CURRENT_DATE)
 );
 
 -- Table: security_questions
