@@ -638,7 +638,11 @@ JSON:"""
     # Rules below cover every common query type.  Each rule only fires when the
     # correct tool is not already selected with valid required params.
     _lower = _augmented_message.lower()
-    _station_ids = re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)
+    # Remove duplicate station IDs while preserving order. This handles cases where
+    # _inject_station_ids adds a duplicate ID to a user message that already
+    # contains one, e.g., "Central (MS01) (MS01)". The list becomes unique,
+    # ensuring the fallback logic selects the correct origin and destination.
+    _station_ids = list(dict.fromkeys(re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)))
     _two_stations = len(_station_ids) >= 2
 
     def _tool_selected(name: str, *required_params) -> bool:
