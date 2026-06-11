@@ -406,20 +406,31 @@ def _execute_tool(
                 (origin_id.upper().startswith("NR") and destination_id.upper().startswith("MS"))
             )
 
+            # The `network` parameter from the LLM can be unreliable for cross-network
+            # queries. We override it to 'auto' if a cross-network journey is detected
+            # to make the agent more robust against LLM errors.
             if is_cross:
-                result = query_interchange_path(origin_id, destination_id)
-            elif optimise_by == "cost":
+                network = "auto"
+
+            if optimise_by == "cost":
+                # query_cheapest_route handles same-network and cross-network (interchange)
+                # routing correctly when network is 'auto'.
                 result = query_cheapest_route(
                     origin_id=origin_id,
                     destination_id=destination_id,
                     network=network,
                 )
-            else:
-                result = query_shortest_route(
-                    origin_id=origin_id,
-                    destination_id=destination_id,
-                    network=network,
-                )
+            else:  # optimise_by == "time"
+                if is_cross:
+                    # query_interchange_path is specifically for fastest cross-network routes.
+                    result = query_interchange_path(origin_id, destination_id)
+                else:
+                    # query_shortest_route is for fastest same-network routes.
+                    result = query_shortest_route(
+                        origin_id=origin_id,
+                        destination_id=destination_id,
+                        network=network,
+                    )
 
         elif tool_name == "find_alternative_routes":
             routes = query_alternative_routes(
