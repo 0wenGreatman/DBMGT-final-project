@@ -832,7 +832,7 @@ def execute_booking(
         origin_station_id:      e.g. "NR01"
         destination_station_id: e.g. "NR05"
         travel_date:            e.g. "2025-06-01"
-        departure_time:         e.g. "07:00"
+        departure_time:         e.g. "07:00", or "any" to choose the earliest departure
         fare_class:             "standard" or "first"
         seat_id:                e.g. "B05" (or "any" to auto-assign)
         ticket_type:            "single" (default) or "return"
@@ -905,15 +905,27 @@ def execute_booking(
 
         stops_travelled = dest_seq - origin_seq
 
-        # Query the exact departure selected by the user.
-        cur.execute("""
-            SELECT service_departure_pk, departure_time
-            FROM service_departures
-            WHERE schedule_id = %s
-              AND service_date = %s::date
-              AND departure_time = %s::time
-              AND status <> 'cancelled'
-        """, (schedule_id, travel_date, departure_time))
+        # Use the requested departure, or the earliest available departure when
+        # the user has no time preference.
+        if departure_time.lower() == "any":
+            cur.execute("""
+                SELECT service_departure_pk, departure_time
+                FROM service_departures
+                WHERE schedule_id = %s
+                  AND service_date = %s::date
+                  AND status <> 'cancelled'
+                ORDER BY departure_time
+                LIMIT 1
+            """, (schedule_id, travel_date))
+        else:
+            cur.execute("""
+                SELECT service_departure_pk, departure_time
+                FROM service_departures
+                WHERE schedule_id = %s
+                  AND service_date = %s::date
+                  AND departure_time = %s::time
+                  AND status <> 'cancelled'
+            """, (schedule_id, travel_date, departure_time))
         departure_row = cur.fetchone()
         if not departure_row:
             return False, "No available departure for this date and time"
@@ -947,7 +959,7 @@ def execute_booking(
             available_seats = query_available_seats(
                 schedule_id,
                 travel_date,
-                departure_time,
+                str(selected_departure_time),
                 fare_class,
             )
             if not available_seats:

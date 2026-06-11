@@ -209,7 +209,7 @@ TOOLS = [
             "origin_station_id":      {"type": "string", "description": "e.g. NR01"},
             "destination_station_id": {"type": "string", "description": "e.g. NR05"},
             "travel_date":            {"type": "string", "description": "YYYY-MM-DD"},
-            "departure_time":         {"type": "string", "description": "HH:MM, e.g. 07:00"},
+            "departure_time":         {"type": "string", "description": "HH:MM, e.g. 07:00, or 'any' for the earliest available departure"},
             "fare_class":             {"type": "string", "description": "standard or first"},
             "seat_id":                {"type": "string", "description": "Specific seat ID (e.g. B05) or 'any' for auto-assign"},
             "ticket_type":            {"type": "string", "description": "single or return (default single)"},
@@ -824,7 +824,6 @@ JSON:"""
         and _context_schedule
         and len(_context_stations) >= 2
         and _context_date
-        and _context_time
         and _context_fare
         and _context_seat
     ):
@@ -835,7 +834,7 @@ JSON:"""
                 "origin_station_id": _context_stations[0].upper(),
                 "destination_station_id": _context_stations[1].upper(),
                 "travel_date": _context_date.group(0),
-                "departure_time": _context_time.group(0),
+                "departure_time": _context_time.group(0) if _context_time else "any",
                 "fare_class": _context_fare.group(1),
                 "seat_id": _context_seat.group(1).upper(),
                 "ticket_type": "return" if "return" in _booking_context_lower else "single",
@@ -929,6 +928,7 @@ JSON:"""
         and "seat" in _lower
         and not _time_match
         and _two_stations
+        and not _tool_selected("make_booking", "seat_id")
     ):
         _fallback(
             "check_national_rail_availability",
