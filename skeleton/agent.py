@@ -464,20 +464,31 @@ def _execute_tool(
                 (origin_id.upper().startswith("NR") and destination_id.upper().startswith("MS"))
             )
 
+            # The `network` parameter from the LLM can be unreliable for cross-network
+            # queries. We override it to 'auto' if a cross-network journey is detected
+            # to make the agent more robust against LLM errors.
             if is_cross:
-                result = query_interchange_path(origin_id, destination_id)
-            elif optimise_by == "cost":
+                network = "auto"
+
+            if optimise_by == "cost":
+                # query_cheapest_route handles same-network and cross-network (interchange)
+                # routing correctly when network is 'auto'.
                 result = query_cheapest_route(
                     origin_id=origin_id,
                     destination_id=destination_id,
                     network=network,
                 )
-            else:
-                result = query_shortest_route(
-                    origin_id=origin_id,
-                    destination_id=destination_id,
-                    network=network,
-                )
+            else:  # optimise_by == "time"
+                if is_cross:
+                    # query_interchange_path is specifically for fastest cross-network routes.
+                    result = query_interchange_path(origin_id, destination_id)
+                else:
+                    # query_shortest_route is for fastest same-network routes.
+                    result = query_shortest_route(
+                        origin_id=origin_id,
+                        destination_id=destination_id,
+                        network=network,
+                    )
 
         elif tool_name == "find_alternative_routes":
             routes = query_alternative_routes(
@@ -740,12 +751,17 @@ JSON:"""
     # Rules below cover every common query type.  Each rule only fires when the
     # correct tool is not already selected with valid required params.
     _lower = _augmented_message.lower()
-    _station_ids = re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)
+
+    # Remove duplicate station IDs while preserving order. This handles cases where
+    # _inject_station_ids adds a duplicate ID to a user message that already
+    # contains one, e.g., "Central (MS01) (MS01)". The list becomes unique,
+    # ensuring the fallback logic selects the correct origin and destination.
+    _station_ids = list(dict.fromkeys(re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)))
+    _two_stations = len(_station_ids) >= 2
     _schedule_ids = re.findall(r'\bNR_SCH\d{2}\b', _augmented_message, re.IGNORECASE)
     _date_match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _augmented_message)
     _time_match = re.search(r'\b(?:[01]\d|2[0-3]):[0-5]\d\b', _augmented_message)
-    _fare_class_match = re.search(r'\b(standard|first)\b', _lower)
-    _two_stations = len(_station_ids) >= 2
+    _fare_class_match = re.search(r'\b(standard|first)\b', _lower)    
     invalid_tool_calls = []
     for call in tool_calls:
         params = call.get("params")
@@ -761,6 +777,7 @@ JSON:"""
             debug_info.append(
                 f"**Discarded malformed tool calls:** {invalid_tool_calls}"
             )
+
 
     def _tool_selected(name: str, *required_params) -> bool:
         """Return True only if tool `name` is in tool_calls with all required params set."""
