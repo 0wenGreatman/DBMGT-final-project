@@ -184,15 +184,16 @@ TOOLS = [
     {
         "name": "get_available_seats",
         "description": (
-            "Show available seats on a national rail service for a given date and fare class. "
+            "Show available seats on a specific national rail departure for a given date, time, and fare class. "
             "Always call this before making a first-class booking, or when the user wants to select a seat."
         ),
         "parameters": {
             "schedule_id":  {"type": "string", "description": "e.g. NR_SCH01"},
             "travel_date":  {"type": "string", "description": "YYYY-MM-DD"},
+            "departure_time": {"type": "string", "description": "HH:MM, e.g. 07:00"},
             "fare_class":   {"type": "string", "description": "standard or first"},
         },
-        "required": ["schedule_id", "travel_date", "fare_class"],
+        "required": ["schedule_id", "travel_date", "departure_time", "fare_class"],
     },
     {
         "name": "make_booking",
@@ -206,11 +207,12 @@ TOOLS = [
             "origin_station_id":      {"type": "string", "description": "e.g. NR01"},
             "destination_station_id": {"type": "string", "description": "e.g. NR05"},
             "travel_date":            {"type": "string", "description": "YYYY-MM-DD"},
+            "departure_time":         {"type": "string", "description": "HH:MM, e.g. 07:00"},
             "fare_class":             {"type": "string", "description": "standard or first"},
             "seat_id":                {"type": "string", "description": "Specific seat ID (e.g. B05) or 'any' for auto-assign"},
             "ticket_type":            {"type": "string", "description": "single or return (default single)"},
         },
-        "required": ["schedule_id", "origin_station_id", "destination_station_id", "travel_date", "fare_class", "seat_id"],
+        "required": ["schedule_id", "origin_station_id", "destination_station_id", "travel_date", "departure_time", "fare_class", "seat_id"],
     },
     {
         "name": "cancel_booking",
@@ -280,8 +282,8 @@ check_national_rail_availability(origin_id, destination_id, travel_date?)
 get_national_rail_fare(schedule_id, fare_class, stops_travelled)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
-get_available_seats(schedule_id, travel_date, fare_class)
-make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
+get_available_seats(schedule_id, travel_date, departure_time, fare_class)
+make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, departure_time, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
 get_user_bookings()
 search_policy(query)
@@ -301,6 +303,16 @@ def _execute_tool(
     This is where the LLM's decision meets the actual databases.
     """
     try:
+        def _require_params(*names: str) -> Optional[str]:
+            missing = [name for name in names if not params.get(name)]
+            if not missing:
+                return None
+            return json.dumps({
+                "error": "Missing required parameter(s): "
+                + ", ".join(missing)
+                + ". Please provide a specific departure_time such as 07:00 when checking seats or making a booking."
+            })
+
         if tool_name == "check_national_rail_availability":
             result = query_national_rail_availability(**params)
 
@@ -349,11 +361,25 @@ def _execute_tool(
             result = query_user_bookings(current_user_email)
 
         elif tool_name == "get_available_seats":
+            missing = _require_params("schedule_id", "travel_date", "departure_time", "fare_class")
+            if missing:
+                return missing
             result = query_available_seats(**params)
 
         elif tool_name == "make_booking":
             if not current_user_email:
                 return json.dumps({"error": "You must be logged in to make a booking."})
+            missing = _require_params(
+                "schedule_id",
+                "origin_station_id",
+                "destination_station_id",
+                "travel_date",
+                "departure_time",
+                "fare_class",
+                "seat_id",
+            )
+            if missing:
+                return missing
             profile = query_user_profile(current_user_email)
             if not profile:
                 return json.dumps({"error": "User profile not found."})
@@ -363,6 +389,7 @@ def _execute_tool(
                 origin_station_id=params["origin_station_id"],
                 destination_station_id=params["destination_station_id"],
                 travel_date=params["travel_date"],
+                departure_time=params["departure_time"],
                 fare_class=params["fare_class"],
                 seat_id=params["seat_id"],
                 ticket_type=params.get("ticket_type", "single"),
@@ -596,6 +623,7 @@ Examples:
 "fastest route MS01 to MS14" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "MS01", "destination_id": "MS14", "optimise_by": "time"}}}}]}}
 "cheapest NR01 to NR05" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "NR01", "destination_id": "NR05", "optimise_by": "cost"}}}}]}}
 "trains NR01 to NR03 on 2025-06-01" -> {{"tool_calls": [{{"name": "check_national_rail_availability", "params": {{"origin_id": "NR01", "destination_id": "NR03", "travel_date": "2025-06-01"}}}}]}}
+"seats on NR_SCH01 at 07:00 on 2026-04-02" -> {{"tool_calls": [{{"name": "get_available_seats", "params": {{"schedule_id": "NR_SCH01", "travel_date": "2026-04-02", "departure_time": "07:00", "fare_class": "standard"}}}}]}}
 "refund policy" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "refund policy"}}}}]}}
 "hello" -> {{"tool_calls": []}}
 "show my bookings" -> {{"tool_calls": [{{"name": "get_user_bookings", "params": {{}}}}]}}
@@ -639,6 +667,10 @@ JSON:"""
     # correct tool is not already selected with valid required params.
     _lower = _augmented_message.lower()
     _station_ids = re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)
+    _schedule_ids = re.findall(r'\bNR_SCH\d{2}\b', _augmented_message, re.IGNORECASE)
+    _date_match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _augmented_message)
+    _time_match = re.search(r'\b(?:[01]\d|2[0-3]):[0-5]\d\b', _augmented_message)
+    _fare_class_match = re.search(r'\b(standard|first)\b', _lower)
     _two_stations = len(_station_ids) >= 2
 
     def _tool_selected(name: str, *required_params) -> bool:
@@ -675,16 +707,33 @@ JSON:"""
                            "schedule", "timetable", "available", "availability"}
         if any(kw in _lower for kw in _avail_triggers):
             o, d = _station_ids[0].upper(), _station_ids[1].upper()
-            _travel_date = next(
-                (w for w in _lower.split() if re.match(r'\d{4}-\d{2}-\d{2}', w)), None
-            )
             _params = {"origin_id": o, "destination_id": d}
-            if _travel_date:
-                _params["travel_date"] = _travel_date
+            if _date_match:
+                _params["travel_date"] = _date_match.group(0)
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
 
-    # 3. Personal booking history — requires login
+    # 3. Seat availability for a specific national rail departure
+    if (
+        _schedule_ids
+        and _date_match
+        and "seat" in _lower
+        and not _tool_selected("get_available_seats", "schedule_id", "travel_date", "departure_time", "fare_class")
+    ):
+        _seat_params = {
+            "schedule_id": _schedule_ids[0].upper(),
+            "travel_date": _date_match.group(0),
+            "fare_class": _fare_class_match.group(1) if _fare_class_match else "standard",
+        }
+        if _time_match:
+            _seat_params["departure_time"] = _time_match.group(0)
+        _fallback(
+            "get_available_seats",
+            _seat_params,
+            "seat availability query",
+        )
+
+    # 4. Personal booking history — requires login
     if current_user_email and not tool_calls:
         _personal_triggers = {"my booking", "my ticket", "my trip", "my journey", "my history",
                                "my reservation", "show booking", "view booking", "check booking",

@@ -170,13 +170,20 @@ def query_national_rail_availability(
             stop_list.stops_in_order,
             stop_list.station_names_in_order,
             COALESCE(fare_info.fare_classes, '[]'::json) AS fare_classes,
-            departure_info.service_departure_pk,
-            COALESCE(departure_info.departure_time, c.first_train_time) AS departure_time,
-            COALESCE(departure_info.departure_status, 'timetable') AS departure_status,
-            COALESCE(seat_info.total_seats, 0) AS total_seats,
-            COALESCE(seat_info.reserved_seats, 0) AS reserved_seats,
-            COALESCE(seat_info.total_seats, 0)
-                - COALESCE(seat_info.reserved_seats, 0) AS available_seats
+            CASE
+                WHEN %s::date IS NULL THEN NULL
+                ELSE departure_summary.departure_count
+            END AS departure_count,
+            departure_summary.departure_time_preview,
+            COALESCE(departure_summary.first_departure_time, c.first_train_time) AS first_departure_time,
+            COALESCE(departure_summary.last_departure_time, c.last_train_time) AS last_departure_time,
+            CASE
+                WHEN %s::date IS NULL THEN 'timetable'
+                WHEN departure_summary.departure_count > 0 THEN 'scheduled'
+                ELSE 'no_departures'
+            END AS departure_status,
+            COALESCE(seat_capacity.total_seats, 0) AS total_seats,
+            'Seat availability depends on departure_time; call get_available_seats for a specific departure.' AS seat_availability_note
         FROM candidates c
         LEFT JOIN LATERAL (
             SELECT
@@ -209,21 +216,28 @@ def query_national_rail_availability(
         ) fare_info ON TRUE
         LEFT JOIN LATERAL (
             SELECT
-                sd.service_departure_pk,
-                sd.departure_time,
-                sd.status AS departure_status
+                COUNT(*)::int AS departure_count,
+                MIN(sd.departure_time) AS first_departure_time,
+                MAX(sd.departure_time) AS last_departure_time,
+                ARRAY(
+                    SELECT sd_preview.departure_time
+                    FROM service_departures sd_preview
+                    WHERE %s::date IS NOT NULL
+                      AND sd_preview.schedule_id = c.schedule_id
+                      AND sd_preview.service_date = %s::date
+                      AND sd_preview.status <> 'cancelled'
+                    ORDER BY sd_preview.departure_time
+                    LIMIT 8
+                ) AS departure_time_preview
             FROM service_departures sd
             WHERE %s::date IS NOT NULL
               AND sd.schedule_id = c.schedule_id
               AND sd.service_date = %s::date
               AND sd.status <> 'cancelled'
-            ORDER BY sd.departure_time
-            LIMIT 1
-        ) departure_info ON TRUE
+        ) departure_summary ON TRUE
         LEFT JOIN LATERAL (
             SELECT
-                COUNT(s.seat_pk)::int AS total_seats,
-                COUNT(DISTINCT sr.seat_pk)::int AS reserved_seats
+                COUNT(s.seat_pk)::int AS total_seats
             FROM seat_layouts sl
             JOIN coaches co
                 ON co.seat_layout_pk = sl.seat_layout_pk
@@ -231,23 +245,18 @@ def query_national_rail_availability(
             JOIN seats s
                 ON s.coach_pk = co.coach_pk
                AND s.is_active = TRUE
-            LEFT JOIN seat_reservations sr
-                ON sr.service_departure_pk = departure_info.service_departure_pk
-               AND sr.seat_pk = s.seat_pk
-               AND sr.reservation_status IN ('held', 'confirmed', 'completed')
-               AND (
-                    sr.reservation_status <> 'held'
-                    OR sr.held_until IS NULL
-                    OR sr.held_until > CURRENT_TIMESTAMP
-               )
             WHERE sl.schedule_id = c.schedule_id
               AND sl.is_active = TRUE
-        ) seat_info ON TRUE
+        ) seat_capacity ON TRUE
         ORDER BY c.line, c.first_train_time, c.schedule_id;
     """
     params = (
         origin_id,
         destination_id,
+        travel_date,
+        travel_date,
+        travel_date,
+        travel_date,
         travel_date,
         travel_date,
         travel_date,
@@ -463,6 +472,7 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
 def query_available_seats(
     schedule_id: str,
     travel_date: str,
+    departure_time: str,
     fare_class: str,
 ) -> list[dict]:
     """
@@ -471,6 +481,7 @@ def query_available_seats(
     Args:
         schedule_id:  e.g. "NR_SCH01"
         travel_date:  e.g. "2025-06-01"
+        departure_time: e.g. "07:00"
         fare_class:   "standard" or "first"
 
     Returns:
@@ -486,17 +497,11 @@ def query_available_seats(
             cd.service_departure_pk,
             cd.departure_time
         FROM seat_layouts sl
-        LEFT JOIN LATERAL (
-            SELECT
-                service_departure_pk,
-                departure_time
-            FROM service_departures
-            WHERE schedule_id = sl.schedule_id
-              AND service_date = %s::date
-              AND status <> 'cancelled'
-            ORDER BY departure_time
-            LIMIT 1
-        ) cd ON TRUE
+        JOIN service_departures cd
+            ON cd.schedule_id = sl.schedule_id
+           AND cd.service_date = %s::date
+           AND cd.departure_time = %s::time
+           AND cd.status <> 'cancelled'
         JOIN coaches c
             ON c.seat_layout_pk = sl.seat_layout_pk
            AND c.fare_class_id = %s
@@ -518,7 +523,7 @@ def query_available_seats(
           AND sl.is_active = TRUE
         ORDER BY c.coach_code, s.seat_row, s.seat_column, s.seat_code;
     """
-    params = (travel_date, fare_class, schedule_id)
+    params = (travel_date, departure_time, fare_class, schedule_id)
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
@@ -813,6 +818,7 @@ def execute_booking(
     origin_station_id: str,
     destination_station_id: str,
     travel_date: str,
+    departure_time: str,
     fare_class: str,
     seat_id: str,
     ticket_type: str = "single",
@@ -826,6 +832,7 @@ def execute_booking(
         origin_station_id:      e.g. "NR01"
         destination_station_id: e.g. "NR05"
         travel_date:            e.g. "2025-06-01"
+        departure_time:         e.g. "07:00"
         fare_class:             "standard" or "first"
         seat_id:                e.g. "B05" (or "any" to auto-assign)
         ticket_type:            "single" (default) or "return"
@@ -898,20 +905,20 @@ def execute_booking(
 
         stops_travelled = dest_seq - origin_seq
 
-        # Query departure for the requested travel date
+        # Query the exact departure selected by the user.
         cur.execute("""
             SELECT service_departure_pk, departure_time
             FROM service_departures
             WHERE schedule_id = %s
               AND service_date = %s::date
+              AND departure_time = %s::time
               AND status <> 'cancelled'
-            ORDER BY departure_time
-            LIMIT 1
-        """, (schedule_id, travel_date))
+        """, (schedule_id, travel_date, departure_time))
         departure_row = cur.fetchone()
         if not departure_row:
-            return False, "No available departure for this date"
+            return False, "No available departure for this date and time"
         service_departure_pk = departure_row['service_departure_pk']
+        selected_departure_time = departure_row['departure_time']
 
         # Verify ticket type exists in the system
         cur.execute("""
@@ -937,7 +944,12 @@ def execute_booking(
         # Handle seat assignment: auto-select or validate user-provided seat
         if seat_id.lower() == "any":
             # Auto-select seats that are adjacent when possible
-            available_seats = query_available_seats(schedule_id, travel_date, fare_class)
+            available_seats = query_available_seats(
+                schedule_id,
+                travel_date,
+                departure_time,
+                fare_class,
+            )
             if not available_seats:
                 return False, "No available seats for this journey"
             selected = auto_select_adjacent_seats(available_seats, 1)
@@ -1036,6 +1048,7 @@ def execute_booking(
             "origin_station_id": origin_station_id,
             "destination_station_id": destination_station_id,
             "service_departure_pk": service_departure_pk,
+            "departure_time": selected_departure_time,
             "ticket_type": ticket_type,
             "fare_class": fare_class,
             "seat_id": seat_id,
