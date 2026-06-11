@@ -136,9 +136,11 @@ TOOLS = [
         "parameters": {
             "schedule_id":     {"type": "string", "description": "e.g. NR_SCH01"},
             "fare_class":      {"type": "string", "description": "standard or first"},
-            "stops_travelled": {"type": "integer", "description": "Number of stops between origin and destination (from availability result)"},
+            "stops_travelled": {"type": "integer", "description": "Number of stops between origin and destination, if known"},
+            "origin_id":       {"type": "string", "description": "National rail origin station ID e.g. NR01"},
+            "destination_id":  {"type": "string", "description": "National rail destination station ID e.g. NR05"},
         },
-        "required": ["schedule_id", "fare_class", "stops_travelled"],
+        "required": ["schedule_id", "fare_class"],
     },
     {
         "name": "check_metro_availability",
@@ -279,7 +281,7 @@ TOOLS = [
 TOOLS_SCHEMA = """\
 find_route(origin_id, destination_id, optimise_by?)
 check_national_rail_availability(origin_id, destination_id, travel_date?)
-get_national_rail_fare(schedule_id, fare_class, stops_travelled)
+get_national_rail_fare(schedule_id, fare_class, stops_travelled? OR origin_id+destination_id)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
 get_available_seats(schedule_id, travel_date, departure_time, fare_class)
@@ -317,6 +319,35 @@ def _execute_tool(
             result = query_national_rail_availability(**params)
 
         elif tool_name == "get_national_rail_fare":
+            if not params.get("stops_travelled"):
+                origin_id = params.get("origin_id")
+                destination_id = params.get("destination_id")
+                schedule_id = params.get("schedule_id")
+                if not origin_id or not destination_id:
+                    return json.dumps({
+                        "error": "Missing required parameter(s): stops_travelled or origin_id and destination_id."
+                    })
+                schedules = query_national_rail_availability(
+                    origin_id=origin_id,
+                    destination_id=destination_id,
+                )
+                matching_schedule = next(
+                    (item for item in schedules if item.get("schedule_id") == schedule_id),
+                    None,
+                )
+                if not matching_schedule:
+                    return json.dumps({
+                        "error": f"No national rail schedule found for {schedule_id} from {origin_id} to {destination_id}."
+                    })
+                params = {
+                    **params,
+                    "stops_travelled": matching_schedule["stops_travelled"],
+                }
+            params = {
+                "schedule_id": params["schedule_id"],
+                "fare_class": params["fare_class"],
+                "stops_travelled": params["stops_travelled"],
+            }
             result = query_national_rail_fare(**params)
 
         elif tool_name == "check_metro_availability":
@@ -524,6 +555,48 @@ def _summarise_result(tool_name: str, result_json: str) -> str:
     return result_json
 
 
+def _direct_answer_from_tool_results(user_message: str, tool_results: list[dict]) -> Optional[str]:
+    """Return deterministic answers for numeric results that the LLM should not recalculate."""
+    if len(tool_results) != 1:
+        return None
+
+    result = tool_results[0]
+    if result.get("tool") != "get_national_rail_fare":
+        return None
+
+    try:
+        data = json.loads(result["result"])
+    except (KeyError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or "error" in data:
+        return None
+
+    params = result.get("params") or {}
+    schedule_id = params.get("schedule_id", "the selected schedule")
+    fare_class = data.get("fare_class", params.get("fare_class", "selected"))
+    stops = data.get("stops_travelled")
+    base = data.get("base_fare_usd")
+    per_stop = data.get("per_stop_rate_usd")
+    total = data.get("total_fare_usd")
+    currency = data.get("currency", "USD")
+
+    if total is None:
+        return None
+
+    if re.search(r"[\u4e00-\u9fff]", user_message):
+        return (
+            f"{schedule_id} 的 {fare_class} class 票價是 {currency} {total:.2f}。"
+            f"計算方式：base fare {currency} {base:.2f} + "
+            f"{stops} stops × {currency} {per_stop:.2f} = {currency} {total:.2f}。"
+        )
+
+    return (
+        f"The {fare_class} class fare on {schedule_id} is {currency} {total:.2f}. "
+        f"Calculation: base fare {currency} {base:.2f} + "
+        f"{stops} stops × {currency} {per_stop:.2f} = {currency} {total:.2f}."
+    )
+
+
 def _parse_tool_calls(llm_response: str) -> list[dict] | None:
     """
     Parse tool call JSON from the LLM response.
@@ -622,6 +695,7 @@ USER: "{_augmented_message}"
 Examples:
 "fastest route MS01 to MS14" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "MS01", "destination_id": "MS14", "optimise_by": "time"}}}}]}}
 "cheapest NR01 to NR05" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "NR01", "destination_id": "NR05", "optimise_by": "cost"}}}}]}}
+"standard fare on NR_SCH01 from NR01 to NR05" -> {{"tool_calls": [{{"name": "get_national_rail_fare", "params": {{"schedule_id": "NR_SCH01", "fare_class": "standard", "origin_id": "NR01", "destination_id": "NR05"}}}}]}}
 "trains NR01 to NR03 on 2025-06-01" -> {{"tool_calls": [{{"name": "check_national_rail_availability", "params": {{"origin_id": "NR01", "destination_id": "NR03", "travel_date": "2025-06-01"}}}}]}}
 "seats on NR_SCH01 at 07:00 on 2026-04-02" -> {{"tool_calls": [{{"name": "get_available_seats", "params": {{"schedule_id": "NR_SCH01", "travel_date": "2026-04-02", "departure_time": "07:00", "fare_class": "standard"}}}}]}}
 "refund policy" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "refund policy"}}}}]}}
@@ -681,13 +755,48 @@ JSON:"""
         p = call.get("params") or {}
         return all(p.get(k) for k in required_params)
 
+    def _rail_fare_tool_ready() -> bool:
+        call = next((c for c in tool_calls if c.get("name") == "get_national_rail_fare"), None)
+        if not call:
+            return False
+        p = call.get("params") or {}
+        return bool(
+            p.get("schedule_id")
+            and p.get("fare_class")
+            and (
+                p.get("stops_travelled")
+                or (p.get("origin_id") and p.get("destination_id"))
+            )
+        )
+
     def _fallback(name: str, params: dict, reason: str):
         nonlocal tool_calls
         tool_calls = [{"name": name, "params": params}]
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. Route / directions / path — also overrides wrong-tool selections
+    # 1. National rail fare from a schedule plus station pair.
+    _fare_triggers = {"fare", "price", "cost", "how much"}
+    _is_rail_fare = (
+        _schedule_ids
+        and _two_stations
+        and _station_ids[0].upper().startswith("NR")
+        and _station_ids[1].upper().startswith("NR")
+        and any(kw in _lower for kw in _fare_triggers)
+    )
+    if _is_rail_fare and not _rail_fare_tool_ready():
+        _fallback(
+            "get_national_rail_fare",
+            {
+                "schedule_id": _schedule_ids[0].upper(),
+                "fare_class": _fare_class_match.group(1) if _fare_class_match else "standard",
+                "origin_id": _station_ids[0].upper(),
+                "destination_id": _station_ids[1].upper(),
+            },
+            "national rail fare query",
+        )
+
+    # 2. Route / directions / path — also overrides wrong-tool selections
     _route_triggers = {"fastest route", "quickest route", "shortest route", "cheapest route",
                        "best route", "how to get", "directions from", "route from", "route to",
                        "get from", "travel from", "way from", "path from"}
@@ -695,13 +804,13 @@ JSON:"""
         any(kw in _lower for kw in _route_triggers) or
         (_two_stations and "route" in _lower)
     )
-    if _is_route and _two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
+    if _is_route and _two_stations and not _is_rail_fare and not _tool_selected("find_route", "origin_id", "destination_id"):
         _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]) else "time"
         _fallback("find_route",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
 
-    # 2. Availability / trains / schedules between two stations
+    # 3. Availability / trains / schedules between two stations
     elif not tool_calls and _two_stations:
         _avail_triggers = {"train", "trains", "service", "services", "run from", "runs from",
                            "schedule", "timetable", "available", "availability"}
@@ -713,7 +822,7 @@ JSON:"""
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
 
-    # 3. Seat availability for a specific national rail departure
+    # 4. Seat availability for a specific national rail departure
     if (
         _schedule_ids
         and _date_match
@@ -733,7 +842,7 @@ JSON:"""
             "seat availability query",
         )
 
-    # 4. Personal booking history — requires login
+    # 5. Personal booking history — requires login
     if current_user_email and not tool_calls:
         _personal_triggers = {"my booking", "my ticket", "my trip", "my journey", "my history",
                                "my reservation", "show booking", "view booking", "check booking",
@@ -772,6 +881,17 @@ JSON:"""
             "result":  result_json,
             "summary": summary,
         })
+
+    direct_answer = _direct_answer_from_tool_results(user_message, tool_results)
+    if direct_answer:
+        updated_history = history + [
+            {"role": "user",      "content": user_message},
+            {"role": "assistant", "content": direct_answer},
+        ]
+        if debug:
+            debug_info.append("**Direct formatter:** national rail fare")
+            return direct_answer, updated_history, "\n\n".join(debug_info)
+        return direct_answer, updated_history
 
     # Step 3: Normalise raw tool results to plain English using the LLM, then
     # compose the final answer.  The normalisation call replaces hand-crafted
