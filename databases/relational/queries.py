@@ -226,10 +226,10 @@ def query_national_rail_availability(
                 COUNT(DISTINCT sr.seat_pk)::int AS reserved_seats
             FROM seat_layouts sl
             JOIN coaches co
-                ON co.layout_id = sl.layout_id
+                ON co.seat_layout_pk = sl.seat_layout_pk
                AND co.is_active = TRUE
             JOIN seats s
-                ON s.coach_id = co.coach_id
+                ON s.coach_pk = co.coach_pk
                AND s.is_active = TRUE
             LEFT JOIN seat_reservations sr
                 ON sr.departure_id = departure_info.departure_id
@@ -281,7 +281,7 @@ def query_national_rail_fare(
 
     sql = """
         SELECT
-            fare_rule_id,
+            fare_rule_code AS fare_rule_id,
             fare_class_id AS fare_class,
             base_fare_usd,
             per_stop_rate_usd,
@@ -427,7 +427,7 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
 
     sql = """
         SELECT
-            fare_rule_id,
+            fare_rule_code AS fare_rule_id,
             base_fare_usd,
             per_stop_rate_usd,
             currency
@@ -479,7 +479,6 @@ def query_available_seats(
     sql = """
         SELECT
             s.seat_code AS seat_id,
-            s.seat_pk,
             c.coach_code AS coach,
             s.seat_row AS row,
             s.seat_column AS column,
@@ -499,11 +498,11 @@ def query_available_seats(
             LIMIT 1
         ) cd ON TRUE
         JOIN coaches c
-            ON c.layout_id = sl.layout_id
+            ON c.seat_layout_pk = sl.seat_layout_pk
            AND c.fare_class_id = %s
            AND c.is_active = TRUE
         JOIN seats s
-            ON s.coach_id = c.coach_id
+            ON s.coach_pk = c.coach_pk
            AND s.is_active = TRUE
         LEFT JOIN seat_reservations sr
             ON sr.departure_id = cd.departure_id
@@ -514,7 +513,7 @@ def query_available_seats(
                 OR sr.held_until IS NULL
                 OR sr.held_until > CURRENT_TIMESTAMP
            )
-        WHERE sr.seat_reservation_id IS NULL
+        WHERE sr.seat_reservation_pk IS NULL
           AND sl.schedule_id = %s
           AND sl.is_active = TRUE
         ORDER BY c.coach_code, s.seat_row, s.seat_column, s.seat_code;
@@ -654,12 +653,156 @@ def query_user_bookings(user_email: str) -> dict:
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql_nr = """
+        SELECT
+            nb.booking_id,
+            up.user_id,
+            ss.schedule_id,
+            ss.line_id,
+            ss.service_type,
+            ss.direction,
+            origin.station_id AS origin_station_id,
+            origin.station_name AS origin_station_name,
+            destination.station_id AS destination_station_id,
+            destination.station_name AS destination_station_name,
+            nb.travel_date,
+            sd.departure_id,
+            sd.departure_time,
+            tt.ticket_type_id AS ticket_type,
+            nb.amount_usd,
+            nb.status,
+            nb.booked_at,
+            nb.travelled_at
+        FROM national_rail_booking nb
+        JOIN user_profiles up
+            ON up.id = nb.user_profile_id
+        JOIN stations origin
+            ON origin.station_pk = nb.origin_station_pk
+        JOIN stations destination
+            ON destination.station_pk = nb.destination_station_pk
+        JOIN service_departures sd
+            ON sd.service_departure_pk = nb.service_departure_pk
+        JOIN schedule_services ss
+            ON ss.schedule_id = sd.schedule_id
+        JOIN ticket_types tt
+            ON tt.ticket_type_pk = nb.ticket_type_pk
+        WHERE up.email = %s
+        ORDER BY nb.travel_date DESC, nb.booked_at DESC;
+    """
+
+    sql_metro = """
+        SELECT
+            mb.trip_id,
+            up.user_id,
+            ss.schedule_id,
+            ss.line_id,
+            ss.service_type,
+            ss.direction,
+            origin.station_id AS origin_station_id,
+            origin.station_name AS origin_station_name,
+            destination.station_id AS destination_station_id,
+            destination.station_name AS destination_station_name,
+            mb.travel_date,
+            tt.ticket_type_id AS ticket_type,
+            mb.day_pass_ref,
+            mb.stops_travelled,
+            mb.amount_usd,
+            mb.status,
+            mb.purchased_at,
+            mb.travelled_at
+        FROM metro_booking mb
+        JOIN user_profiles up
+            ON up.id = mb.user_profile_id
+        JOIN schedule_services ss
+            ON ss.schedule_service_pk = mb.schedule_service_pk
+        JOIN stations origin
+            ON origin.station_pk = mb.origin_station_pk
+        JOIN stations destination
+            ON destination.station_pk = mb.destination_station_pk
+        JOIN ticket_types tt
+            ON tt.ticket_type_pk = mb.ticket_type_pk
+        WHERE up.email = %s
+        ORDER BY mb.travel_date DESC, mb.purchased_at DESC;
+    """
+
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql_nr, (user_email,))
+            national_rail = [_row_to_dict(row) for row in cur.fetchall()]
+
+            cur.execute(sql_metro, (user_email,))
+            metro = [_row_to_dict(row) for row in cur.fetchall()]
+
+    return {
+        "national_rail": national_rail,
+        "metro": metro,
+    }
 
 
 def query_payment_info(booking_id: str) -> Optional[dict]:
-    """Return payment record for a booking or metro trip."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    """
+    Return payment record for a booking or metro trip.
+    
+    Args:
+        booking_id: e.g. "BK001" (national rail) or "MT001" (metro)
+    
+    Returns:
+        dict with payment_id, amount_usd, method, status, paid_at
+        or None if not found
+    """
+    if not booking_id:
+        return None
+    
+    # Determine booking type by prefix: "BK" for national rail, "MT" for metro
+    is_national_rail = booking_id.upper().startswith("BK")
+    is_metro = booking_id.upper().startswith("MT")
+    
+    if is_national_rail:
+        sql = """
+            SELECT
+                pr.payment_id,
+                pr.amount_usd,
+                pr.method,
+                pr.status,
+                pr.paid_at
+            FROM payment_record pr
+            JOIN national_rail_payment_record nrpr
+                ON nrpr.payment_pk = pr.payment_pk
+            JOIN national_rail_booking nrb
+                ON nrb.booking_pk = nrpr.booking_pk
+            WHERE nrb.booking_id = %s
+            ORDER BY pr.paid_at DESC, pr.payment_pk DESC
+            LIMIT 1
+        """
+    elif is_metro:
+        sql = """
+            SELECT
+                pr.payment_id,
+                pr.amount_usd,
+                pr.method,
+                pr.status,
+                pr.paid_at
+            FROM payment_record pr
+            JOIN metro_payment_record mrpr
+                ON mrpr.payment_pk = pr.payment_pk
+            JOIN metro_booking mb
+                ON mb.trip_pk = mrpr.trip_pk
+            WHERE mb.trip_id = %s
+            ORDER BY pr.paid_at DESC, pr.payment_pk DESC
+            LIMIT 1
+        """
+    else:
+        return None
+    
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (booking_id,))
+            row = cur.fetchone()
+    
+    if not row:
+        return None
+    
+    return _row_to_dict(row)
 
 
 # ── TRANSACTIONAL OPERATIONS ──────────────────────────────────────────────────
@@ -691,7 +834,226 @@ def execute_booking(
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PG_DSN)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Verify user exists and is active
+        cur.execute(
+            "SELECT id FROM user_profiles WHERE user_id = %s AND is_active = TRUE",
+            (user_id,),
+        )
+        user_row = cur.fetchone()
+        if not user_row:
+            return False, "User not found or inactive"
+        user_profile_id = user_row["id"]
+
+        # Verify schedule exists and is active
+        cur.execute("""
+            SELECT ss.schedule_id
+            FROM schedule_services ss
+            WHERE ss.schedule_id = %s
+              AND ss.is_active = TRUE
+              AND ss.service_type IN ('normal', 'express')
+        """, (schedule_id,))
+        if not cur.fetchone():
+            return False, "Schedule not found or inactive"
+
+        # Validate origin station: exists, allows boarding, is part of schedule
+        cur.execute("""
+            SELECT st.stop_sequence, s.station_pk
+            FROM schedule_stops st
+            JOIN stations s ON s.station_id = st.station_id
+            WHERE st.schedule_id = %s
+              AND st.station_id = %s
+              AND st.is_boarding_allowed = TRUE
+        """, (schedule_id, origin_station_id))
+        origin_row = cur.fetchone()
+        if not origin_row:
+            return False, "Origin station not valid or boarding not allowed"
+        origin_seq = origin_row['stop_sequence']
+        origin_station_pk = origin_row['station_pk']
+
+        # Validate destination station: exists, allows alighting, is part of schedule
+        cur.execute("""
+            SELECT st.stop_sequence, s.station_pk
+            FROM schedule_stops st
+            JOIN stations s ON s.station_id = st.station_id
+            WHERE st.schedule_id = %s
+              AND st.station_id = %s
+              AND st.is_alighting_allowed = TRUE
+        """, (schedule_id, destination_station_id))
+        dest_row = cur.fetchone()
+        if not dest_row:
+            return False, "Destination station not valid or alighting not allowed"
+        dest_seq = dest_row['stop_sequence']
+        destination_station_pk = dest_row['station_pk']
+
+        # Verify origin comes before destination in the route
+        if origin_seq >= dest_seq:
+            return False, "Origin must come before destination"
+
+        stops_travelled = dest_seq - origin_seq
+
+        # Query departure for the requested travel date
+        cur.execute("""
+            SELECT service_departure_pk, departure_id, departure_time
+            FROM service_departures
+            WHERE schedule_id = %s
+              AND service_date = %s::date
+              AND status <> 'cancelled'
+            ORDER BY departure_time
+            LIMIT 1
+        """, (schedule_id, travel_date))
+        departure_row = cur.fetchone()
+        if not departure_row:
+            return False, "No available departure for this date"
+        departure_id = departure_row['departure_id']
+        service_departure_pk = departure_row['service_departure_pk']
+
+        # Verify ticket type exists in the system
+        cur.execute("""
+            SELECT tt.ticket_type_pk
+            FROM ticket_types tt
+            JOIN ticket_type_networks ttn
+                ON ttn.ticket_type_id = tt.ticket_type_id
+               AND ttn.network_id = 'N'
+            WHERE tt.ticket_type_id = %s
+              AND tt.is_active = TRUE
+        """, (ticket_type,))
+        ticket_type_row = cur.fetchone()
+        if not ticket_type_row:
+            return False, f"Ticket type '{ticket_type}' not found"
+        ticket_type_pk = ticket_type_row['ticket_type_pk']
+
+        # Calculate fare based on schedule, fare class, and distance (stops travelled)
+        fare_info = query_national_rail_fare(schedule_id, fare_class, stops_travelled)
+        if not fare_info:
+            return False, f"No fare rule for {fare_class} class on this schedule"
+        amount_usd = Decimal(str(fare_info['total_fare_usd']))
+
+        # Handle seat assignment: auto-select or validate user-provided seat
+        if seat_id.lower() == "any":
+            # Auto-select seats that are adjacent when possible
+            available_seats = query_available_seats(schedule_id, travel_date, fare_class)
+            if not available_seats:
+                return False, "No available seats for this journey"
+            selected = auto_select_adjacent_seats(available_seats, 1)
+            if not selected:
+                return False, "Unable to auto-select a seat"
+            seat_id = selected[0]
+
+        # Verify seat is valid for the selected fare class and schedule
+        cur.execute("""
+            SELECT s.seat_pk FROM seats s
+            JOIN coaches c ON c.coach_pk = s.coach_pk
+            JOIN seat_layouts sl ON sl.seat_layout_pk = c.seat_layout_pk
+            WHERE sl.schedule_id = %s
+              AND s.seat_code = %s
+              AND c.fare_class_id = %s
+              AND s.is_active = TRUE
+              AND c.is_active = TRUE
+            FOR UPDATE OF s
+        """, (schedule_id, seat_id, fare_class))
+        seat_row = cur.fetchone()
+        if not seat_row:
+            return False, f"Seat {seat_id} invalid for {fare_class} class"
+        seat_pk = seat_row['seat_pk']
+
+        # Check if seat is already reserved on this departure
+        cur.execute("""
+            SELECT seat_reservation_pk FROM seat_reservations
+            WHERE departure_id = %s
+              AND seat_pk = %s
+              AND reservation_status IN ('held', 'confirmed', 'completed')
+              AND (reservation_status <> 'held' 
+                   OR held_until IS NULL 
+                   OR held_until > CURRENT_TIMESTAMP)
+        """, (departure_id, seat_pk))
+        if cur.fetchone():
+            return False, f"Seat {seat_id} is already reserved"
+
+        # Create the booking record
+        booking_id = _gen_booking_id()
+        now = datetime.now(timezone.utc)
+
+        cur.execute("""
+            INSERT INTO national_rail_booking (
+                booking_id, user_profile_id, origin_station_pk, destination_station_pk,
+                travel_date, service_departure_pk, ticket_type_pk, amount_usd,
+                status, booked_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING booking_pk, booking_id, user_profile_id, travel_date,
+                      amount_usd, status, booked_at
+        """, (
+            booking_id, user_profile_id, origin_station_pk, destination_station_pk,
+            travel_date, service_departure_pk, ticket_type_pk, amount_usd,
+            'confirmed', now
+        ))
+
+        booking = cur.fetchone()
+        if not booking:
+            conn.rollback()
+            return False, "Failed to create booking record"
+
+        # Create seat reservation with confirmed status
+        cur.execute("""
+            INSERT INTO seat_reservations (
+                departure_id, seat_pk, booking_id, origin_station_id,
+                destination_station_id, origin_stop_sequence, destination_stop_sequence,
+                reservation_status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            departure_id, seat_pk, booking_id, origin_station_id,
+            destination_station_id, origin_seq, dest_seq, 'confirmed'
+        ))
+
+        # The rubric requires booking and payment to be all-or-nothing, so the
+        # payment and its link are inserted before the single commit below.
+        payment_id = _gen_payment_id()
+        cur.execute("""
+            INSERT INTO payment_record (
+                payment_id, amount_usd, method, status, paid_at
+            )
+            VALUES (%s, %s, 'credit_card', 'paid', %s)
+            RETURNING payment_pk
+        """, (payment_id, amount_usd, now))
+        payment = cur.fetchone()
+
+        cur.execute("""
+            INSERT INTO national_rail_payment_record (payment_pk, booking_pk)
+            VALUES (%s, %s)
+        """, (payment['payment_pk'], booking['booking_pk']))
+
+        conn.commit()
+        result = dict(booking)
+        result.update({
+            "schedule_id": schedule_id,
+            "origin_station_id": origin_station_id,
+            "destination_station_id": destination_station_id,
+            "departure_id": departure_id,
+            "ticket_type": ticket_type,
+            "fare_class": fare_class,
+            "seat_id": seat_id,
+            "payment_id": payment_id,
+        })
+        return True, _row_to_dict(result)
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"Booking failed: {str(e)}"
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
 
 
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
@@ -710,7 +1072,189 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         (True, result_dict)  with refund_amount_usd and policy note
         (False, error_msg)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PG_DSN)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Fetch booking details and verify ownership
+        cur.execute("""
+            SELECT
+                nrb.booking_pk,
+                nrb.booking_id,
+                up.user_id,
+                nrb.amount_usd,
+                nrb.travel_date,
+                nrb.status,
+                nrb.booked_at,
+                ss.service_type,
+                EXTRACT(EPOCH FROM (
+                    (sd.service_date + sd.departure_time) - CURRENT_TIMESTAMP
+                )) / 3600 AS hours_until_departure,
+                original_payment.method AS payment_method
+            FROM national_rail_booking nrb
+            JOIN user_profiles up
+                ON up.id = nrb.user_profile_id
+            JOIN service_departures sd
+                ON sd.service_departure_pk = nrb.service_departure_pk
+            JOIN schedule_services ss ON ss.schedule_id = sd.schedule_id
+            LEFT JOIN LATERAL (
+                SELECT pr.method
+                FROM national_rail_payment_record nrpr
+                JOIN payment_record pr ON pr.payment_pk = nrpr.payment_pk
+                WHERE nrpr.booking_pk = nrb.booking_pk
+                  AND pr.status = 'paid'
+                ORDER BY pr.paid_at DESC, pr.payment_pk DESC
+                LIMIT 1
+            ) original_payment ON TRUE
+            WHERE nrb.booking_id = %s
+            FOR UPDATE OF nrb
+        """, (booking_id,))
+        booking = cur.fetchone()
+
+        if not booking:
+            return False, f"Booking {booking_id} not found"
+
+        # Verify user ownership
+        if booking['user_id'] != user_id:
+            return False, "Booking does not belong to this user"
+
+        # Check if booking can be cancelled
+        if booking['status'] != 'confirmed':
+            return False, f"Cannot cancel booking with status '{booking['status']}'"
+
+        hours_until_departure = max(
+            Decimal(booking['hours_until_departure']),
+            Decimal("0"),
+        )
+
+        # Determine refund policy and percentage based on service type and timing
+        service_type = booking['service_type']
+        
+        if service_type in ('normal',):
+            # RF001: Normal service refund windows
+            if hours_until_departure >= 48:
+                refund_percentage = 100
+                admin_fee = Decimal("0.00")
+                policy_note = "RF001: 48+ hours before departure (100% refund)"
+            elif hours_until_departure >= 24:
+                refund_percentage = 75
+                admin_fee = Decimal("0.50")
+                policy_note = "RF001: 24-48 hours before departure (75% refund, $0.50 fee)"
+            elif hours_until_departure >= 2:
+                refund_percentage = 50
+                admin_fee = Decimal("0.50")
+                policy_note = "RF001: 2-24 hours before departure (50% refund, $0.50 fee)"
+            else:
+                refund_percentage = 0
+                admin_fee = Decimal("0.00")
+                policy_note = "RF001: Less than 2 hours before departure (0% refund)"
+        
+        elif service_type in ('express',):
+            # RF002: Express service refund windows
+            if hours_until_departure >= 48:
+                refund_percentage = 100
+                admin_fee = Decimal("1.00")
+                policy_note = "RF002: 48+ hours before departure (100% refund, $1.00 fee)"
+            elif hours_until_departure >= 24:
+                refund_percentage = 50
+                admin_fee = Decimal("1.00")
+                policy_note = "RF002: 24-48 hours before departure (50% refund, $1.00 fee)"
+            else:
+                refund_percentage = 0
+                admin_fee = Decimal("0.00")
+                policy_note = "RF002: Less than 24 hours before departure (0% refund)"
+        
+        else:
+            # Default policy for unknown service types
+            refund_percentage = 50
+            admin_fee = Decimal("0.00")
+            policy_note = f"Default policy: 50% refund for {service_type} service"
+
+        # Calculate refund amount
+        refund_amount = max(
+            booking['amount_usd'] * Decimal(refund_percentage) / 100 - admin_fee,
+            Decimal("0.00"),
+        ).quantize(Decimal("0.01"))
+
+        # Update booking status to cancelled
+        now = datetime.now(timezone.utc)
+        cur.execute("""
+            UPDATE national_rail_booking
+            SET status = 'cancelled'
+            WHERE booking_id = %s
+            RETURNING booking_pk, booking_id, user_profile_id, status
+        """, (booking_id,))
+        
+        cancelled_booking = cur.fetchone()
+        if not cancelled_booking:
+            conn.rollback()
+            return False, "Failed to update booking status"
+
+        # Release seat reservations for this booking
+        cur.execute("""
+            UPDATE seat_reservations
+            SET reservation_status = 'cancelled'
+            WHERE booking_id = %s
+              AND reservation_status IN ('held', 'confirmed')
+        """, (booking_id,))
+
+        # Generate refund payment record if refund amount > 0
+        if refund_amount > 0:
+            if not booking['payment_method']:
+                return False, "Cannot issue refund because no original payment was found"
+
+            refund_payment_id = _gen_payment_id()
+            cur.execute("""
+                INSERT INTO payment_record (
+                    payment_id, amount_usd, method, status, paid_at
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING payment_pk
+            """, (
+                refund_payment_id,
+                refund_amount,
+                booking['payment_method'],
+                'refunded',
+                now
+            ))
+            
+            refund_payment = cur.fetchone()
+            if refund_payment:
+                # Link refund to the original booking
+                cur.execute("""
+                    INSERT INTO national_rail_payment_record (payment_pk, booking_pk)
+                    VALUES (%s, %s)
+                """, (refund_payment['payment_pk'], booking['booking_pk']))
+
+        conn.commit()
+        
+        # Return cancellation result
+        result = {
+            'booking_id': booking_id,
+            'original_amount_usd': float(booking['amount_usd']),
+            'refund_percentage': refund_percentage,
+            'admin_fee_usd': float(admin_fee),
+            'refund_amount': float(refund_amount),
+            'refund_amount_usd': float(refund_amount),
+            'policy_note': policy_note,
+            'cancelled_at': now.isoformat(),
+            'hours_until_departure': float(hours_until_departure)
+        }
+        
+        return True, result
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"Cancellation failed: {str(e)}"
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
