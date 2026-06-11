@@ -39,6 +39,7 @@ NETWORK_NAMES = {
 }
 
 FARE_EFFECTIVE_FROM = "2024-01-01"
+SERVICE_DEPARTURE_SEED_END_DATE = date(2026, 6, 30)
 
 WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -587,7 +588,8 @@ def seed_service_departures(cur):
     """Seed concrete national rail departures from schedule rules."""
     schedules = load("national_rail_schedules.json")
     bookings = load("bookings.json")
-    start_date, end_date = _service_date_bounds(bookings)
+    start_date, booking_end_date = _service_date_bounds(bookings)
+    end_date = max(booking_end_date, SERVICE_DEPARTURE_SEED_END_DATE)
     departure_rows = _build_service_departure_rows(schedules, start_date, end_date)
 
     insert_many(
