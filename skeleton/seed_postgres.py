@@ -74,6 +74,13 @@ def _usd(value):
     return Decimal(str(value))
 
 
+def _fetch_map(cur, table, key_column, value_column):
+    cur.execute(
+        f"SELECT {key_column}, {value_column} FROM {table}"
+    )
+    return {row[0]: row[1] for row in cur.fetchall()}
+
+
 def _ticket_notes(details):
     """Keep extra ticket policy details without adding more table columns yet."""
     note_keys = (
@@ -829,22 +836,26 @@ def seed_users(cur):
 
 def seed_national_rail_bookings(cur):
     data = load("bookings.json")
-    # Insert national rail bookings derived from bookings.json
+
+    user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
+    station_map = _fetch_map(cur, "stations", "station_id", "station_pk")
+    departure_map = _fetch_map(cur, "service_departures", "departure_id", "service_departure_pk")
+    ticket_type_map = _fetch_map(cur, "ticket_types", "ticket_type_id", "ticket_type_pk")
+
     rows = []
     for item in data:
-        # Build the concrete departure id used as FK
         departure_id = _departure_id(
             item["schedule_id"], item["travel_date"], item["departure_time"]
         )
         rows.append(
             (
                 item["booking_id"],
-                item["user_id"],
-                item["origin_station_id"],
-                item["destination_station_id"],
+                user_map[item["user_id"]],
+                station_map[item["origin_station_id"]],
+                station_map[item["destination_station_id"]],
                 item["travel_date"],
-                departure_id,
-                item["ticket_type"],
+                departure_map[departure_id],
+                ticket_type_map[item["ticket_type"]],
                 _usd(item.get("amount_usd")),
                 item.get("status"),
                 item.get("booked_at"),
@@ -857,12 +868,12 @@ def seed_national_rail_bookings(cur):
         "national_rail_booking",
         [
             "booking_id",
-            "user_id",
-            "origin_station_id",
-            "destination_station_id",
+            "user_profile_id",
+            "origin_station_pk",
+            "destination_station_pk",
             "travel_date",
-            "departure_id",
-            "ticket_type_id",
+            "service_departure_pk",
+            "ticket_type_pk",
             "amount_usd",
             "status",
             "booked_at",
@@ -874,37 +885,46 @@ def seed_national_rail_bookings(cur):
 
 def seed_metro_travels(cur):
     data = load("metro_travel_history.json")
-    rows = []
+
+    user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
+    schedule_map = _fetch_map(cur, "schedule_services", "schedule_id", "schedule_service_pk")
+    station_map = _fetch_map(cur, "stations", "station_id", "station_pk")
+    ticket_type_map = _fetch_map(cur, "ticket_types", "ticket_type_id", "ticket_type_pk")
+
+    parent_rows = []
+    child_rows = []
     for item in data:
-        rows.append(
-            (
-                item.get("trip_id"),
-                item.get("user_id"),
-                item.get("schedule_id"),
-                item.get("origin_station_id"),
-                item.get("destination_station_id"),
-                item.get("travel_date"),
-                item.get("ticket_type"),
-                item.get("day_pass_ref"),
-                item.get("stops_travelled"),
-                _usd(item.get("amount_usd")),
-                item.get("status"),
-                item.get("purchased_at"),
-                item.get("travelled_at"),
-            )
+        row = (
+            item["trip_id"],
+            user_map[item["user_id"]],
+            schedule_map[item["schedule_id"]],
+            station_map[item["origin_station_id"]],
+            station_map[item["destination_station_id"]],
+            item["travel_date"],
+            ticket_type_map[item["ticket_type"]],
+            item.get("day_pass_ref"),
+            item.get("stops_travelled"),
+            _usd(item.get("amount_usd")),
+            item.get("status"),
+            item.get("purchased_at"),
+            item.get("travelled_at"),
         )
+        if item.get("day_pass_ref"):
+            child_rows.append(row)
+        else:
+            parent_rows.append(row)
 
     insert_many(
         cur,
         "metro_booking",
         [
             "trip_id",
-            "user_id",
-            "schedule_id",
-            "origin_station_id",
-            "destination_station_id",
+            "user_profile_id",
+            "schedule_service_pk",
+            "origin_station_pk",
+            "destination_station_pk",
             "travel_date",
-            "ticket_type_id",
+            "ticket_type_pk",
             "day_pass_ref",
             "stops_travelled",
             "amount_usd",
@@ -912,17 +932,36 @@ def seed_metro_travels(cur):
             "purchased_at",
             "travelled_at",
         ],
-        rows,
+        parent_rows,
     )
+
+    if child_rows:
+        insert_many(
+            cur,
+            "metro_booking",
+            [
+                "trip_id",
+                "user_profile_id",
+                "schedule_service_pk",
+                "origin_station_pk",
+                "destination_station_pk",
+                "travel_date",
+                "ticket_type_pk",
+                "day_pass_ref",
+                "stops_travelled",
+                "amount_usd",
+                "status",
+                "purchased_at",
+                "travelled_at",
+            ],
+            child_rows,
+        )
 
 
 def seed_payments(cur):
     data = load("payments.json")
-    # Insert base payment records first, then link to either national_rail or metro tables
-    base_rows = []
-    nr_links = []
-    metro_links = []
 
+    base_rows = []
     for item in data:
         base_rows.append(
             (
@@ -934,12 +973,6 @@ def seed_payments(cur):
             )
         )
 
-        bid = item.get("booking_id")
-        if bid and bid.upper().startswith("BK"):
-            nr_links.append((item["payment_id"], bid))
-        elif bid and bid.upper().startswith("MT"):
-            metro_links.append((item["payment_id"], bid))
-
     insert_many(
         cur,
         "payment_record",
@@ -947,48 +980,98 @@ def seed_payments(cur):
         base_rows,
     )
 
-    if nr_links:
-        insert_many(cur, "national_rail_payment_record", ["payment_id", "booking_id"], nr_links)
-    if metro_links:
-        insert_many(cur, "metro_payment_record", ["payment_id", "trip_id"], metro_links)
+    payment_map = _fetch_map(cur, "payment_record", "payment_id", "payment_pk")
+    booking_map = _fetch_map(cur, "national_rail_booking", "booking_id", "booking_pk")
+    trip_map = _fetch_map(cur, "metro_booking", "trip_id", "trip_pk")
+
+    nr_rows = []
+    metro_rows = []
+    metro_payment_by_trip_ref = {}
+    for item in data:
+        payment_pk = payment_map[item["payment_id"]]
+        booking_ref = item.get("booking_id")
+        if booking_ref and booking_ref.upper().startswith("BK"):
+            nr_rows.append((payment_pk, booking_map[booking_ref]))
+        elif booking_ref and booking_ref.upper().startswith("MT"):
+            metro_rows.append((payment_pk, trip_map[booking_ref]))
+            metro_payment_by_trip_ref[booking_ref] = payment_pk
+
+    # A day-pass purchase pays for its later zero-cost trips as well, so those
+    # trips share the parent's payment association.
+    for trip in load("metro_travel_history.json"):
+        day_pass_ref = trip.get("day_pass_ref")
+        if day_pass_ref and day_pass_ref in metro_payment_by_trip_ref:
+            metro_rows.append(
+                (metro_payment_by_trip_ref[day_pass_ref], trip_map[trip["trip_id"]])
+            )
+
+    if nr_rows:
+        insert_many(
+            cur,
+            "national_rail_payment_record",
+            ["payment_pk", "booking_pk"],
+            nr_rows,
+        )
+    if metro_rows:
+        insert_many(
+            cur,
+            "metro_payment_record",
+            ["payment_pk", "trip_pk"],
+            metro_rows,
+        )
 
 
 def seed_feedback(cur):
     data = load("feedback.json")
-    base_rows = []
-    nr_links = []
-    metro_links = []
+    user_map = _fetch_map(cur, "user_profiles", "user_id", "id")
 
+    base_rows = []
     for item in data:
         base_rows.append(
             (
                 item["feedback_id"],
-                item.get("user_id"),
+                user_map[item["user_id"]],
                 item.get("rating"),
                 item.get("comment"),
                 item.get("submitted_at"),
             )
         )
 
-        bid = item.get("booking_id")
-        if bid and bid.upper().startswith("BK"):
-            nr_links.append((item["feedback_id"], bid))
-        elif bid and bid.upper().startswith("MT"):
-            metro_links.append((item["feedback_id"], bid))
-
     insert_many(
         cur,
         "feedback_base",
-        ["feedback_id", "user_id", "rating", "comment", "submitted_at"],
+        ["feedback_id", "user_profile_id", "rating", "comment", "submitted_at"],
         base_rows,
     )
 
-    if nr_links:
-        insert_many(cur, "national_rail_feedback", ["feedback_id", "booking_id"], nr_links)
-    if metro_links:
-        insert_many(cur, "metro_feedback", ["feedback_id", "trip_id"], metro_links)
+    feedback_map = _fetch_map(cur, "feedback_base", "feedback_id", "feedback_pk")
+    booking_map = _fetch_map(cur, "national_rail_booking", "booking_id", "booking_pk")
+    trip_map = _fetch_map(cur, "metro_booking", "trip_id", "trip_pk")
 
+    nr_rows = []
+    metro_rows = []
+    for item in data:
+        feedback_pk = feedback_map[item["feedback_id"]]
+        booking_ref = item.get("booking_id")
+        if booking_ref and booking_ref.upper().startswith("BK"):
+            nr_rows.append((feedback_pk, booking_map[booking_ref]))
+        elif booking_ref and booking_ref.upper().startswith("MT"):
+            metro_rows.append((feedback_pk, trip_map[booking_ref]))
 
+    if nr_rows:
+        insert_many(
+            cur,
+            "national_rail_feedback",
+            ["feedback_pk", "booking_pk"],
+            nr_rows,
+        )
+    if metro_rows:
+        insert_many(
+            cur,
+            "metro_feedback",
+            ["feedback_pk", "trip_pk"],
+            metro_rows,
+        )
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
