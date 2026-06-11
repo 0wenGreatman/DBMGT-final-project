@@ -70,16 +70,21 @@ def build_documents():
                 "content": _text({section: br[section]}),
             })
 
-    # travel_policies.json — one document per network section
+    # travel_policies.json — one document per SUB-policy for better RAG chunking.
+    # This creates smaller, more focused documents for the vector store, improving
+    # the accuracy of similarity searches for specific policy questions.
     tp = _load("travel_policies.json")
-    for section in ("metro", "national_rail"):
-        if section in tp:
-            docs.append({
-                "title": f"Travel Policies — {section.replace('_', ' ').title()}",
-                "category": "conduct",
-                "source_file": "travel_policies.json",
-                "content": _text({section: tp[section]}),
-            })
+    for network_key, network_policies in tp.items():
+        if network_key in ("metro", "national_rail"):
+            network_name = network_key.replace('_', ' ').title()
+            for policy_key, policy_content in network_policies.items():
+                policy_name = policy_key.replace('_', ' ').title()
+                docs.append({
+                    "title": f"Travel Policy: {network_name} — {policy_name}",
+                    "category": "conduct",
+                    "source_file": "travel_policies.json",
+                    "content": _text({policy_key: policy_content}),
+                })
 
     return docs
 
