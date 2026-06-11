@@ -832,7 +832,7 @@ def execute_booking(
         origin_station_id:      e.g. "NR01"
         destination_station_id: e.g. "NR05"
         travel_date:            e.g. "2025-06-01"
-        departure_time:         e.g. "07:00"
+        departure_time:         e.g. "07:00", or "any" to choose the earliest departure
         fare_class:             "standard" or "first"
         seat_id:                e.g. "B05" (or "any" to auto-assign)
         ticket_type:            "single" (default) or "return"
@@ -905,15 +905,27 @@ def execute_booking(
 
         stops_travelled = dest_seq - origin_seq
 
-        # Query the exact departure selected by the user.
-        cur.execute("""
-            SELECT service_departure_pk, departure_time
-            FROM service_departures
-            WHERE schedule_id = %s
-              AND service_date = %s::date
-              AND departure_time = %s::time
-              AND status <> 'cancelled'
-        """, (schedule_id, travel_date, departure_time))
+        # Use the requested departure, or the earliest available departure when
+        # the user has no time preference.
+        if departure_time.lower() == "any":
+            cur.execute("""
+                SELECT service_departure_pk, departure_time
+                FROM service_departures
+                WHERE schedule_id = %s
+                  AND service_date = %s::date
+                  AND status <> 'cancelled'
+                ORDER BY departure_time
+                LIMIT 1
+            """, (schedule_id, travel_date))
+        else:
+            cur.execute("""
+                SELECT service_departure_pk, departure_time
+                FROM service_departures
+                WHERE schedule_id = %s
+                  AND service_date = %s::date
+                  AND departure_time = %s::time
+                  AND status <> 'cancelled'
+            """, (schedule_id, travel_date, departure_time))
         departure_row = cur.fetchone()
         if not departure_row:
             return False, "No available departure for this date and time"
@@ -947,7 +959,7 @@ def execute_booking(
             available_seats = query_available_seats(
                 schedule_id,
                 travel_date,
-                departure_time,
+                str(selected_departure_time),
                 fare_class,
             )
             if not available_seats:
@@ -1091,12 +1103,15 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Fetch booking details and verify ownership
+        # Fetch booking details and verify ownership. Accept either booking_id
+        # (business id) or booking_pk (numeric) provided as the identifier.
         cur.execute("""
             SELECT
                 nrb.booking_pk,
                 nrb.booking_id,
-                up.user_id,
+                nrb.user_profile_id,
+                up.user_id AS owner_user_id,
+                up.id AS owner_uuid,
                 nrb.amount_usd,
                 nrb.travel_date,
                 nrb.status,
@@ -1121,16 +1136,24 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 ORDER BY pr.paid_at DESC, pr.payment_pk DESC
                 LIMIT 1
             ) original_payment ON TRUE
-            WHERE nrb.booking_id = %s
+            LEFT JOIN seat_reservations sr
+                ON sr.booking_id = nrb.booking_id
+            WHERE (nrb.booking_id = %s OR nrb.booking_pk::text = %s)
             FOR UPDATE OF nrb
-        """, (booking_id,))
+        """, (booking_id, booking_id))
         booking = cur.fetchone()
 
         if not booking:
             return False, f"Booking {booking_id} not found"
 
-        # Verify user ownership
-        if booking['user_id'] != user_id:
+        # Verify user ownership; allow either business user_id or UUID to be
+        # supplied by the caller.
+        owner_matches = (
+            str(booking.get('owner_user_id')) == str(user_id)
+            or str(booking.get('owner_uuid')) == str(user_id)
+            or str(booking.get('user_profile_id')) == str(user_id)
+        )
+        if not owner_matches:
             return False, "Booking does not belong to this user"
 
         # Check if booking can be cancelled
@@ -1196,9 +1219,9 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         cur.execute("""
             UPDATE national_rail_booking
             SET status = 'cancelled'
-            WHERE booking_id = %s
+            WHERE booking_pk = %s
             RETURNING booking_pk, booking_id, user_profile_id, status
-        """, (booking_id,))
+        """, (booking['booking_pk'],))
         
         cancelled_booking = cur.fetchone()
         if not cancelled_booking:
@@ -1211,7 +1234,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             SET reservation_status = 'cancelled'
             WHERE booking_id = %s
               AND reservation_status IN ('held', 'confirmed')
-        """, (booking_id,))
+        """, (booking['booking_id'],))
 
         # Generate refund payment record if refund amount > 0
         if refund_amount > 0:
@@ -1245,7 +1268,8 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         
         # Return cancellation result
         result = {
-            'booking_id': booking_id,
+            'booking_id': booking['booking_id'],
+            'status': cancelled_booking['status'],
             'original_amount_usd': float(booking['amount_usd']),
             'refund_percentage': refund_percentage,
             'admin_fee_usd': float(admin_fee),

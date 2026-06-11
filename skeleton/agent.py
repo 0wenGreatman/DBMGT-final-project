@@ -209,7 +209,7 @@ TOOLS = [
             "origin_station_id":      {"type": "string", "description": "e.g. NR01"},
             "destination_station_id": {"type": "string", "description": "e.g. NR05"},
             "travel_date":            {"type": "string", "description": "YYYY-MM-DD"},
-            "departure_time":         {"type": "string", "description": "HH:MM, e.g. 07:00"},
+            "departure_time":         {"type": "string", "description": "HH:MM, e.g. 07:00, or 'any' for the earliest available departure"},
             "fare_class":             {"type": "string", "description": "standard or first"},
             "seat_id":                {"type": "string", "description": "Specific seat ID (e.g. B05) or 'any' for auto-assign"},
             "ticket_type":            {"type": "string", "description": "single or return (default single)"},
@@ -761,8 +761,23 @@ JSON:"""
     _schedule_ids = re.findall(r'\bNR_SCH\d{2}\b', _augmented_message, re.IGNORECASE)
     _date_match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _augmented_message)
     _time_match = re.search(r'\b(?:[01]\d|2[0-3]):[0-5]\d\b', _augmented_message)
-    _fare_class_match = re.search(r'\b(standard|first)\b', _lower)
-    
+    _fare_class_match = re.search(r'\b(standard|first)\b', _lower)    
+    invalid_tool_calls = []
+    for call in tool_calls:
+        params = call.get("params")
+        if (
+            not isinstance(params, dict)
+            or any(isinstance(value, (dict, list)) for value in params.values())
+            or any(value in ("", None) for value in params.values())
+        ):
+            invalid_tool_calls.append(call)
+    if invalid_tool_calls:
+        tool_calls = [call for call in tool_calls if call not in invalid_tool_calls]
+        if debug:
+            debug_info.append(
+                f"**Discarded malformed tool calls:** {invalid_tool_calls}"
+            )
+
 
     def _tool_selected(name: str, *required_params) -> bool:
         """Return True only if tool `name` is in tool_calls with all required params set."""
@@ -792,7 +807,71 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. National rail fare from a schedule plus station pair.
+    # 1. Booking flow. Incomplete requests retrieve valid departures first;
+    # complete, explicitly confirmed requests execute the booking.
+    _history_text = " ".join(
+        str(message.get("content", ""))
+        for message in recent_history
+        if isinstance(message, dict)
+    )
+    _booking_context = f"{_history_text} {_augmented_message}"
+    _booking_context_lower = _booking_context.lower()
+    _context_stations = re.findall(
+        r'\b(MS\d{2}|NR\d{2})\b',
+        _booking_context,
+        re.IGNORECASE,
+    )
+    _context_schedule = re.search(r'\bNR_SCH\d{2}\b', _booking_context, re.IGNORECASE)
+    _context_date = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _booking_context)
+    _context_time = re.search(r'\b(?:[01]\d|2[0-3]):[0-5]\d\b', _booking_context)
+    _context_fare = re.search(r'\b(standard|first)\b', _booking_context_lower)
+    _context_seat = re.search(r'\b(any|[A-Z]\d{2})\b', _booking_context, re.IGNORECASE)
+    _booking_request = any(
+        trigger in _lower
+        for trigger in ("book", "booking", "reserve", "reservation")
+    )
+    _booking_confirmed = any(
+        trigger in _lower
+        for trigger in ("i confirm", "confirm my booking", "go ahead", "proceed")
+    )
+
+    if (
+        current_user_email
+        and _booking_confirmed
+        and _context_schedule
+        and len(_context_stations) >= 2
+        and _context_date
+        and _context_fare
+        and _context_seat
+    ):
+        _fallback(
+            "make_booking",
+            {
+                "schedule_id": _context_schedule.group(0).upper(),
+                "origin_station_id": _context_stations[0].upper(),
+                "destination_station_id": _context_stations[1].upper(),
+                "travel_date": _context_date.group(0),
+                "departure_time": _context_time.group(0) if _context_time else "any",
+                "fare_class": _context_fare.group(1),
+                "seat_id": _context_seat.group(1).upper(),
+                "ticket_type": "return" if "return" in _booking_context_lower else "single",
+            },
+            "complete confirmed booking request",
+        )
+    elif _booking_request and _two_stations:
+        _params = {
+            "origin_id": _station_ids[0].upper(),
+            "destination_id": _station_ids[1].upper(),
+        }
+        if _date_match:
+            _params["travel_date"] = _date_match.group(0)
+        _fallback(
+            "check_national_rail_availability",
+            _params,
+            "booking request needs departure details",
+        )
+
+    # 2. National rail fare from a schedule plus station pair.
     _fare_triggers = {"fare", "price", "cost", "how much"}
     _is_rail_fare = (
         _schedule_ids
@@ -813,7 +892,7 @@ JSON:"""
             "national rail fare query",
         )
 
-    # 2. Route / directions / path — also overrides wrong-tool selections
+    # 3. Route / directions / path — also overrides wrong-tool selections
     _route_triggers = {"fastest route", "quickest route", "shortest route", "cheapest route",
                        "best route", "how to get", "directions from", "route from", "route to",
                        "get from", "travel from", "way from", "path from"}
@@ -827,7 +906,7 @@ JSON:"""
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
 
-    # 3. Availability / trains / schedules between two stations
+    # 4. Availability / trains / schedules between two stations
     elif not tool_calls and _two_stations:
         _avail_triggers = {"train", "trains", "service", "services", "run from", "runs from",
                            "schedule", "timetable", "available", "availability"}
@@ -839,11 +918,14 @@ JSON:"""
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
 
-    # 4. Seat availability for a specific national rail departure
+    # 5. Seat availability for a specific national rail departure. Without a
+    # time, show the valid departure times rather than calling this tool.
     if (
         _schedule_ids
         and _date_match
         and "seat" in _lower
+        and _time_match
+        and not _tool_selected("make_booking", "departure_time", "seat_id")
         and not _tool_selected("get_available_seats", "schedule_id", "travel_date", "departure_time", "fare_class")
     ):
         _seat_params = {
@@ -851,15 +933,31 @@ JSON:"""
             "travel_date": _date_match.group(0),
             "fare_class": _fare_class_match.group(1) if _fare_class_match else "standard",
         }
-        if _time_match:
-            _seat_params["departure_time"] = _time_match.group(0)
+        _seat_params["departure_time"] = _time_match.group(0)
         _fallback(
             "get_available_seats",
             _seat_params,
             "seat availability query",
         )
+    elif (
+        _schedule_ids
+        and _date_match
+        and "seat" in _lower
+        and not _time_match
+        and _two_stations
+        and not _tool_selected("make_booking", "seat_id")
+    ):
+        _fallback(
+            "check_national_rail_availability",
+            {
+                "origin_id": _station_ids[0].upper(),
+                "destination_id": _station_ids[1].upper(),
+                "travel_date": _date_match.group(0),
+            },
+            "seat request needs a departure time",
+        )
 
-    # 5. Personal booking history — requires login
+    # 6. Personal booking history — requires login
     if current_user_email and not tool_calls:
         _personal_triggers = {"my booking", "my ticket", "my trip", "my journey", "my history",
                                "my reservation", "show booking", "view booking", "check booking",
