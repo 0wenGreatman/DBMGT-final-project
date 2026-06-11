@@ -1103,12 +1103,15 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Fetch booking details and verify ownership
+        # Fetch booking details and verify ownership. Accept either booking_id
+        # (business id) or booking_pk (numeric) provided as the identifier.
         cur.execute("""
             SELECT
                 nrb.booking_pk,
                 nrb.booking_id,
-                up.user_id,
+                nrb.user_profile_id,
+                up.user_id AS owner_user_id,
+                up.id AS owner_uuid,
                 nrb.amount_usd,
                 nrb.travel_date,
                 nrb.status,
@@ -1133,16 +1136,24 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 ORDER BY pr.paid_at DESC, pr.payment_pk DESC
                 LIMIT 1
             ) original_payment ON TRUE
-            WHERE nrb.booking_id = %s
-            FOR UPDATE OF nrb
-        """, (booking_id,))
+            LEFT JOIN seat_reservations sr
+                ON sr.booking_id = nrb.booking_id
+            WHERE (nrb.booking_id = %s OR nrb.booking_pk::text = %s)
+            FOR UPDATE OF nrb, sr
+        """, (booking_id, booking_id))
         booking = cur.fetchone()
 
         if not booking:
             return False, f"Booking {booking_id} not found"
 
-        # Verify user ownership
-        if booking['user_id'] != user_id:
+        # Verify user ownership; allow either business user_id or UUID to be
+        # supplied by the caller.
+        owner_matches = (
+            str(booking.get('owner_user_id')) == str(user_id)
+            or str(booking.get('owner_uuid')) == str(user_id)
+            or str(booking.get('user_profile_id')) == str(user_id)
+        )
+        if not owner_matches:
             return False, "Booking does not belong to this user"
 
         # Check if booking can be cancelled
