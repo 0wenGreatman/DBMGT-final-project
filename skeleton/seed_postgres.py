@@ -12,6 +12,7 @@ Safe to re-run: implement your inserts with ON CONFLICT DO NOTHING.
 import json
 import os
 import sys
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import psycopg2
@@ -38,6 +39,8 @@ NETWORK_NAMES = {
 }
 
 FARE_EFFECTIVE_FROM = "2024-01-01"
+
+WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def load(filename):
@@ -72,6 +75,57 @@ def _usd(value):
     if value is None:
         return None
     return Decimal(str(value))
+
+
+def _time_to_minutes(value):
+    parsed = datetime.strptime(value, "%H:%M")
+    return parsed.hour * 60 + parsed.minute
+
+
+def _minutes_to_time(value):
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def _date_range(start_date, end_date):
+    current = start_date
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
+
+
+def _service_date_bounds(bookings):
+    travel_dates = [date.fromisoformat(item["travel_date"]) for item in bookings]
+    return min(travel_dates), max(travel_dates)
+
+
+def _build_service_departure_rows(schedules, start_date, end_date):
+    """Expand schedule rules into concrete dated departure rows."""
+    departure_rows = []
+
+    for schedule in schedules:
+        schedule_id = schedule["schedule_id"]
+        operating_days = set(schedule.get("operates_on", []))
+        first_departure = _time_to_minutes(schedule["first_train_time"])
+        last_departure = _time_to_minutes(schedule["last_train_time"])
+        frequency_min = int(schedule["frequency_min"])
+
+        for service_date in _date_range(start_date, end_date):
+            if WEEKDAY_KEYS[service_date.weekday()] not in operating_days:
+                continue
+
+            departure_minute = first_departure
+            while departure_minute <= last_departure:
+                departure_rows.append(
+                    (
+                        schedule_id,
+                        service_date.isoformat(),
+                        _minutes_to_time(departure_minute),
+                        "scheduled",
+                    )
+                )
+                departure_minute += frequency_min
+
+    return sorted(departure_rows)
 
 
 def _fetch_map(cur, table, key_column, value_column):
@@ -530,22 +584,12 @@ def seed_national_rail_schedules(cur):
 
 
 def seed_service_departures(cur):
-    """Seed concrete national rail departures observed in the mock bookings."""
-    data = load("bookings.json")
+    """Seed concrete national rail departures from schedule rules."""
+    schedules = load("national_rail_schedules.json")
+    bookings = load("bookings.json")
+    start_date, end_date = _service_date_bounds(bookings)
+    departure_rows = _build_service_departure_rows(schedules, start_date, end_date)
 
-    # bookings.json is the only mock file with explicit concrete train dates
-    # and departure times. Use it only to derive schedule instances here.
-    departure_rows = sorted(
-        {
-            (
-                item["schedule_id"],
-                item["travel_date"],
-                item["departure_time"],
-                "scheduled",
-            )
-            for item in data
-        }
-    )
     insert_many(
         cur,
         "service_departures",
