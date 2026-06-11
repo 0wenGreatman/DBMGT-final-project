@@ -636,6 +636,91 @@ def seed_seat_layouts(cur):
     )
 
 
+def seed_seat_reservations(cur):
+    data = load("bookings.json")
+    layouts = load("national_rail_seat_layouts.json")
+    schedules = load("national_rail_schedules.json")
+
+    # Seat rows use layout_id + coach + seat_id, so map each schedule to its
+    # assigned layout before building the reservation seat FK.
+    layout_by_schedule = {
+        item["schedule_id"]: item["layout_id"]
+        for item in layouts
+    }
+
+    # The reservation table stores stop sequence numbers for the booked segment.
+    # Rebuild those sequence numbers from the schedule stop order in the JSON.
+    stop_sequence_by_schedule = {
+        item["schedule_id"]: {
+            station_id: sequence
+            for sequence, station_id in enumerate(item["stops_in_order"], start=1)
+        }
+        for item in schedules
+    }
+
+    reservation_rows = []
+    for item in data:
+        booking_id = item["booking_id"]
+        schedule_id = item["schedule_id"]
+        layout_id = layout_by_schedule.get(schedule_id)
+        stop_sequences = stop_sequence_by_schedule.get(schedule_id)
+
+        if not layout_id:
+            raise ValueError(f"No seat layout found for schedule {schedule_id}")
+        if not stop_sequences:
+            raise ValueError(f"No stop sequence found for schedule {schedule_id}")
+
+        origin_station_id = item["origin_station_id"]
+        destination_station_id = item["destination_station_id"]
+        origin_sequence = stop_sequences.get(origin_station_id)
+        destination_sequence = stop_sequences.get(destination_station_id)
+
+        if origin_sequence is None or destination_sequence is None:
+            raise ValueError(
+                f"Booking {booking_id} has stations outside schedule {schedule_id}"
+            )
+
+        coach_id = f"{layout_id}_{item['coach']}"
+        seat_pk = f"{coach_id}_{item['seat_id']}"
+
+        reservation_rows.append(
+            (
+                f"SR_{booking_id}",
+                _departure_id(
+                    schedule_id,
+                    item["travel_date"],
+                    item["departure_time"],
+                ),
+                seat_pk,
+                booking_id,
+                origin_station_id,
+                destination_station_id,
+                origin_sequence,
+                destination_sequence,
+                item["status"],
+                None,
+            )
+        )
+
+    insert_many(
+        cur,
+        "seat_reservations",
+        [
+            "seat_reservation_id",
+            "departure_id",
+            "seat_pk",
+            "booking_id",
+            "origin_station_id",
+            "destination_station_id",
+            "origin_stop_sequence",
+            "destination_stop_sequence",
+            "reservation_status",
+            "held_until",
+        ],
+        reservation_rows,
+    )
+
+
 def seed_users(cur):
     data = load("registered_users.json")
     
@@ -897,6 +982,7 @@ def main():
         seed_seat_layouts(cur)
         seed_users(cur)
         seed_national_rail_bookings(cur)
+        seed_seat_reservations(cur)
         seed_metro_travels(cur)
         seed_payments(cur)
         seed_feedback(cur)

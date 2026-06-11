@@ -25,7 +25,8 @@ from __future__ import annotations
 import json
 import random
 import string
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
+from decimal import Decimal
 from typing import Optional
 
 import psycopg2
@@ -39,6 +40,30 @@ def _connect():
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = True
     return conn
+
+
+def _jsonable(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (date, datetime, time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _row_to_dict(row) -> dict:
+    return {key: _jsonable(value) for key, value in dict(row).items()}
+
+
+def _positive_int(value) -> Optional[int]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _gen_booking_id() -> str:
@@ -83,7 +108,155 @@ def query_national_rail_availability(
         destination_id:  e.g. "NR05"
         travel_date:     e.g. "2025-06-01" — used to count bookings; omit for general info
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        WITH candidates AS (
+            SELECT
+                ss.schedule_id,
+                ss.line_id AS line,
+                l.line_name,
+                ss.service_type,
+                ss.direction,
+                ss.first_train_time,
+                ss.last_train_time,
+                ss.frequency_min,
+                origin_stop.station_id AS origin_id,
+                origin_station.station_name AS origin_name,
+                destination_stop.station_id AS destination_id,
+                destination_station.station_name AS destination_name,
+                origin_stop.stop_sequence AS origin_stop_sequence,
+                destination_stop.stop_sequence AS destination_stop_sequence,
+                destination_stop.stop_sequence - origin_stop.stop_sequence AS stops_travelled,
+                CASE
+                    WHEN origin_stop.travel_time_from_origin_min IS NOT NULL
+                     AND destination_stop.travel_time_from_origin_min IS NOT NULL
+                    THEN destination_stop.travel_time_from_origin_min
+                       - origin_stop.travel_time_from_origin_min
+                    ELSE NULL
+                END AS travel_time_min
+            FROM schedule_services ss
+            JOIN lines l
+                ON l.line_id = ss.line_id
+            JOIN schedule_stops origin_stop
+                ON origin_stop.schedule_id = ss.schedule_id
+               AND origin_stop.station_id = %s
+            JOIN stations origin_station
+                ON origin_station.station_id = origin_stop.station_id
+            JOIN schedule_stops destination_stop
+                ON destination_stop.schedule_id = ss.schedule_id
+               AND destination_stop.station_id = %s
+            JOIN stations destination_station
+                ON destination_station.station_id = destination_stop.station_id
+            WHERE ss.service_type IN ('normal', 'express')
+              AND ss.is_active = TRUE
+              AND l.network_id = 'N'
+              AND l.is_active = TRUE
+              AND origin_station.is_active = TRUE
+              AND destination_station.is_active = TRUE
+              AND origin_stop.is_boarding_allowed = TRUE
+              AND destination_stop.is_alighting_allowed = TRUE
+              AND origin_stop.stop_sequence < destination_stop.stop_sequence
+              AND (
+                    %s::date IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM schedule_operating_days sod
+                        WHERE sod.schedule_id = ss.schedule_id
+                          AND sod.day_of_week = lower(to_char(%s::date, 'Dy'))
+                    )
+              )
+        )
+        SELECT
+            c.*,
+            stop_list.stops_in_order,
+            stop_list.station_names_in_order,
+            COALESCE(fare_info.fare_classes, '[]'::json) AS fare_classes,
+            departure_info.departure_id,
+            COALESCE(departure_info.departure_time, c.first_train_time) AS departure_time,
+            COALESCE(departure_info.departure_status, 'timetable') AS departure_status,
+            COALESCE(seat_info.total_seats, 0) AS total_seats,
+            COALESCE(seat_info.reserved_seats, 0) AS reserved_seats,
+            COALESCE(seat_info.total_seats, 0)
+                - COALESCE(seat_info.reserved_seats, 0) AS available_seats
+        FROM candidates c
+        LEFT JOIN LATERAL (
+            SELECT
+                array_agg(st.station_id ORDER BY st.stop_sequence) AS stops_in_order,
+                array_agg(s.station_name ORDER BY st.stop_sequence) AS station_names_in_order
+            FROM schedule_stops st
+            JOIN stations s
+                ON s.station_id = st.station_id
+            WHERE st.schedule_id = c.schedule_id
+        ) stop_list ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                json_agg(
+                    json_build_object(
+                        'fare_class', fr.fare_class_id,
+                        'base_fare_usd', fr.base_fare_usd,
+                        'per_stop_rate_usd', fr.per_stop_rate_usd,
+                        'currency', fr.currency
+                    )
+                    ORDER BY fr.fare_class_id
+                ) AS fare_classes
+            FROM fare_rules fr
+            WHERE fr.network_id = 'N'
+              AND fr.schedule_id = c.schedule_id
+              AND fr.ticket_type_id = 'single'
+              AND fr.pricing_model = 'stops_based_with_fare_class'
+              AND fr.is_active = TRUE
+              AND CURRENT_DATE >= fr.effective_from
+              AND (fr.effective_to IS NULL OR CURRENT_DATE <= fr.effective_to)
+        ) fare_info ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                sd.departure_id,
+                sd.departure_time,
+                sd.status AS departure_status
+            FROM service_departures sd
+            WHERE %s::date IS NOT NULL
+              AND sd.schedule_id = c.schedule_id
+              AND sd.service_date = %s::date
+              AND sd.status <> 'cancelled'
+            ORDER BY sd.departure_time
+            LIMIT 1
+        ) departure_info ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(s.seat_pk)::int AS total_seats,
+                COUNT(DISTINCT sr.seat_pk)::int AS reserved_seats
+            FROM seat_layouts sl
+            JOIN coaches co
+                ON co.layout_id = sl.layout_id
+               AND co.is_active = TRUE
+            JOIN seats s
+                ON s.coach_id = co.coach_id
+               AND s.is_active = TRUE
+            LEFT JOIN seat_reservations sr
+                ON sr.departure_id = departure_info.departure_id
+               AND sr.seat_pk = s.seat_pk
+               AND sr.reservation_status IN ('held', 'confirmed', 'completed')
+               AND (
+                    sr.reservation_status <> 'held'
+                    OR sr.held_until IS NULL
+                    OR sr.held_until > CURRENT_TIMESTAMP
+               )
+            WHERE sl.schedule_id = c.schedule_id
+              AND sl.is_active = TRUE
+        ) seat_info ON TRUE
+        ORDER BY c.line, c.first_train_time, c.schedule_id;
+    """
+    params = (
+        origin_id,
+        destination_id,
+        travel_date,
+        travel_date,
+        travel_date,
+        travel_date,
+    )
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def query_national_rail_fare(
@@ -102,7 +275,42 @@ def query_national_rail_fare(
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    stops_travelled = _positive_int(stops_travelled)
+    if stops_travelled is None:
+        return None
+
+    sql = """
+        SELECT
+            fare_rule_id,
+            fare_class_id AS fare_class,
+            base_fare_usd,
+            per_stop_rate_usd,
+            currency
+        FROM fare_rules
+        WHERE network_id = 'N'
+          AND schedule_id = %s
+          AND ticket_type_id = 'single'
+          AND fare_class_id = %s
+          AND pricing_model = 'stops_based_with_fare_class'
+          AND is_active = TRUE
+          AND CURRENT_DATE >= effective_from
+          AND (effective_to IS NULL OR CURRENT_DATE <= effective_to)
+        ORDER BY effective_from DESC
+        LIMIT 1;
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id, fare_class))
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    result = dict(row)
+    total = result["base_fare_usd"] + result["per_stop_rate_usd"] * stops_travelled
+    result["stops_travelled"] = stops_travelled
+    result["total_fare_usd"] = total
+    return _row_to_dict(result)
 
 
 # ── METRO SCHEDULES & FARE ────────────────────────────────────────────────────
@@ -115,7 +323,91 @@ def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
         origin_id:       e.g. "MS01"
         destination_id:  e.g. "MS09"
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        WITH candidates AS (
+            SELECT
+                ss.schedule_id,
+                ss.line_id AS line,
+                l.line_name,
+                ss.service_type,
+                ss.direction,
+                ss.first_train_time,
+                ss.last_train_time,
+                ss.frequency_min,
+                origin_stop.station_id AS origin_id,
+                origin_station.station_name AS origin_name,
+                destination_stop.station_id AS destination_id,
+                destination_station.station_name AS destination_name,
+                origin_stop.stop_sequence AS origin_stop_sequence,
+                destination_stop.stop_sequence AS destination_stop_sequence,
+                destination_stop.stop_sequence - origin_stop.stop_sequence AS stops_travelled,
+                CASE
+                    WHEN origin_stop.travel_time_from_origin_min IS NOT NULL
+                     AND destination_stop.travel_time_from_origin_min IS NOT NULL
+                    THEN destination_stop.travel_time_from_origin_min
+                       - origin_stop.travel_time_from_origin_min
+                    ELSE NULL
+                END AS travel_time_min
+            FROM schedule_services ss
+            JOIN lines l
+                ON l.line_id = ss.line_id
+            JOIN schedule_stops origin_stop
+                ON origin_stop.schedule_id = ss.schedule_id
+               AND origin_stop.station_id = %s
+            JOIN stations origin_station
+                ON origin_station.station_id = origin_stop.station_id
+            JOIN schedule_stops destination_stop
+                ON destination_stop.schedule_id = ss.schedule_id
+               AND destination_stop.station_id = %s
+            JOIN stations destination_station
+                ON destination_station.station_id = destination_stop.station_id
+            WHERE ss.service_type = 'metro'
+              AND ss.is_active = TRUE
+              AND l.network_id = 'M'
+              AND l.is_active = TRUE
+              AND origin_station.is_active = TRUE
+              AND destination_station.is_active = TRUE
+              AND origin_stop.is_boarding_allowed = TRUE
+              AND destination_stop.is_alighting_allowed = TRUE
+              AND origin_stop.stop_sequence < destination_stop.stop_sequence
+        )
+        SELECT
+            c.*,
+            stop_list.stops_in_order,
+            stop_list.station_names_in_order,
+            COALESCE(operating_days.operates_on, ARRAY[]::varchar[]) AS operates_on
+        FROM candidates c
+        LEFT JOIN LATERAL (
+            SELECT
+                array_agg(st.station_id ORDER BY st.stop_sequence) AS stops_in_order,
+                array_agg(s.station_name ORDER BY st.stop_sequence) AS station_names_in_order
+            FROM schedule_stops st
+            JOIN stations s
+                ON s.station_id = st.station_id
+            WHERE st.schedule_id = c.schedule_id
+        ) stop_list ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT array_agg(
+                sod.day_of_week
+                ORDER BY CASE sod.day_of_week
+                    WHEN 'mon' THEN 1
+                    WHEN 'tue' THEN 2
+                    WHEN 'wed' THEN 3
+                    WHEN 'thu' THEN 4
+                    WHEN 'fri' THEN 5
+                    WHEN 'sat' THEN 6
+                    WHEN 'sun' THEN 7
+                END
+            ) AS operates_on
+            FROM schedule_operating_days sod
+            WHERE sod.schedule_id = c.schedule_id
+        ) operating_days ON TRUE
+        ORDER BY c.line, c.first_train_time, c.schedule_id;
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (origin_id, destination_id))
+            return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
@@ -129,7 +421,41 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     Returns:
         dict with base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    stops_travelled = _positive_int(stops_travelled)
+    if stops_travelled is None:
+        return None
+
+    sql = """
+        SELECT
+            fare_rule_id,
+            base_fare_usd,
+            per_stop_rate_usd,
+            currency
+        FROM fare_rules
+        WHERE network_id = 'M'
+          AND schedule_id = %s
+          AND ticket_type_id = 'single'
+          AND fare_class_id IS NULL
+          AND pricing_model = 'stops_based'
+          AND is_active = TRUE
+          AND CURRENT_DATE >= effective_from
+          AND (effective_to IS NULL OR CURRENT_DATE <= effective_to)
+        ORDER BY effective_from DESC
+        LIMIT 1;
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id,))
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    result = dict(row)
+    total = result["base_fare_usd"] + result["per_stop_rate_usd"] * stops_travelled
+    result["stops_travelled"] = stops_travelled
+    result["total_fare_usd"] = total
+    return _row_to_dict(result)
 
 
 # ── SEAT SELECTION ────────────────────────────────────────────────────────────
@@ -150,7 +476,54 @@ def query_available_seats(
     Returns:
         List of dicts: {seat_id, coach, row, column}
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        SELECT
+            s.seat_code AS seat_id,
+            s.seat_pk,
+            c.coach_code AS coach,
+            s.seat_row AS row,
+            s.seat_column AS column,
+            c.fare_class_id AS fare_class,
+            cd.departure_id,
+            cd.departure_time
+        FROM seat_layouts sl
+        LEFT JOIN LATERAL (
+            SELECT
+                departure_id,
+                departure_time
+            FROM service_departures
+            WHERE schedule_id = sl.schedule_id
+              AND service_date = %s::date
+              AND status <> 'cancelled'
+            ORDER BY departure_time
+            LIMIT 1
+        ) cd ON TRUE
+        JOIN coaches c
+            ON c.layout_id = sl.layout_id
+           AND c.fare_class_id = %s
+           AND c.is_active = TRUE
+        JOIN seats s
+            ON s.coach_id = c.coach_id
+           AND s.is_active = TRUE
+        LEFT JOIN seat_reservations sr
+            ON sr.departure_id = cd.departure_id
+           AND sr.seat_pk = s.seat_pk
+           AND sr.reservation_status IN ('held', 'confirmed', 'completed')
+           AND (
+                sr.reservation_status <> 'held'
+                OR sr.held_until IS NULL
+                OR sr.held_until > CURRENT_TIMESTAMP
+           )
+        WHERE sr.seat_reservation_id IS NULL
+          AND sl.schedule_id = %s
+          AND sl.is_active = TRUE
+        ORDER BY c.coach_code, s.seat_row, s.seat_column, s.seat_code;
+    """
+    params = (travel_date, fare_class, schedule_id)
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[str]:
@@ -164,20 +537,81 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
     """
     if not available_seats or count <= 0:
         return []
-    if count >= len(available_seats):
-        return [s["seat_id"] for s in available_seats[:count]]
 
     from collections import defaultdict
-    rows: dict[int, list[dict]] = defaultdict(list)
-    for seat in available_seats:
-        rows[seat["row"]].append(seat)
 
-    for row_seats in sorted(rows.values(), key=lambda s: s[0]["row"]):
-        if len(row_seats) >= count:
-            return [s["seat_id"] for s in row_seats[:count]]
+    def column_rank(column) -> int:
+        text = str(column or "").strip().upper()
+        if text.isalpha():
+            rank = 0
+            for char in text:
+                rank = rank * 26 + ord(char) - ord("A") + 1
+            return rank
+        if text.isdigit():
+            return int(text)
+        return 10_000
 
-    sorted_seats = sorted(available_seats, key=lambda s: (s["row"], s["column"]))
-    return [s["seat_id"] for s in sorted_seats[:count]]
+    def seat_sort_key(seat: dict):
+        row = seat.get("row")
+        row_key = row if isinstance(row, int) else 10_000
+        return (
+            seat.get("coach") or "",
+            row_key,
+            column_rank(seat.get("column")),
+            seat.get("seat_id") or "",
+        )
+
+    seats = sorted(
+        [seat for seat in available_seats if seat.get("seat_id")],
+        key=seat_sort_key,
+    )
+    if count >= len(seats):
+        return [seat["seat_id"] for seat in seats[:count]]
+
+    coaches: dict[str, list[dict]] = defaultdict(list)
+    for seat in seats:
+        coaches[seat.get("coach") or ""].append(seat)
+
+    for coach_seats in coaches.values():
+        rows: dict[int, list[dict]] = defaultdict(list)
+        for seat in coach_seats:
+            row = seat.get("row")
+            if isinstance(row, int):
+                rows[row].append(seat)
+
+        for row_seats in sorted(rows.values(), key=lambda row: row[0]["row"]):
+            row_seats = sorted(row_seats, key=seat_sort_key)
+            if len(row_seats) < count:
+                continue
+
+            ranks = [column_rank(seat.get("column")) for seat in row_seats]
+            for start in range(0, len(row_seats) - count + 1):
+                window = row_seats[start:start + count]
+                window_ranks = ranks[start:start + count]
+                if all(
+                    window_ranks[i + 1] == window_ranks[i] + 1
+                    for i in range(len(window_ranks) - 1)
+                ):
+                    return [seat["seat_id"] for seat in window]
+
+            return [seat["seat_id"] for seat in row_seats[:count]]
+
+    for coach_seats in coaches.values():
+        if len(coach_seats) >= count:
+            best_window = min(
+                (
+                    coach_seats[start:start + count]
+                    for start in range(0, len(coach_seats) - count + 1)
+                ),
+                key=lambda window: (
+                    max(seat.get("row") or 10_000 for seat in window)
+                    - min(seat.get("row") or 10_000 for seat in window),
+                    seat_sort_key(window[0]),
+                ),
+            )
+            return [seat["seat_id"] for seat in best_window]
+
+    return [seat["seat_id"] for seat in seats[:count]]
 
 
 # ── USER & BOOKING QUERIES ────────────────────────────────────────────────────
