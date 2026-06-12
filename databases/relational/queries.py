@@ -654,7 +654,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
         print(f"Error fetching user profile: {e}")
         return None
 
-
+# -- TASK 6 EXTENSION: Add the function of editting personal profiles (date of birth and phone)
 def update_user_profile(
     user_email: str,
     phone: Optional[str] = None,

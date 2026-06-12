@@ -457,7 +457,7 @@ with gr.Blocks(title="TransitFlow") as demo:
         forgot_msg               = gr.Markdown("")
         forgot_back_btn          = gr.Button("Back to login", size="sm")
 
-    # ── Profile panel (hidden by default) ─────────────────────────────
+    # ── -- TASK 6 EXTENSION: Profile panel (hidden by default) ─────────────────────────────
     with gr.Column(visible=False) as profile_panel:
         gr.Markdown("### Profile")
         with gr.Row():
