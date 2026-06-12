@@ -556,9 +556,6 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
         REFERENCES seats(seat_pk)
         ON DELETE RESTRICT,
 
-    FOREIGN KEY (booking_id)
-         REFERENCES national_rail_booking(booking_id),
-
     FOREIGN KEY (origin_station_id)
         REFERENCES stations(station_id)
         ON DELETE RESTRICT,
@@ -617,6 +614,11 @@ CREATE TABLE national_rail_booking (
     CHECK (origin_station_pk <> destination_station_pk), -- Origin and destination cannot be the same station.
     CHECK (travelled_at IS NULL OR status = 'completed')
 );
+
+ALTER TABLE seat_reservations
+    ADD CONSTRAINT seat_reservations_booking_id_fkey
+    FOREIGN KEY (booking_id)
+    REFERENCES national_rail_booking(booking_id);
 
 -- Bookings and travel history for Metro.
 CREATE TABLE metro_booking (
