@@ -556,9 +556,8 @@ CREATE TABLE IF NOT EXISTS seat_reservations (
         REFERENCES seats(seat_pk)
         ON DELETE RESTRICT,
 
-    -- Future FK after national_rail_booking is created:
-    -- FOREIGN KEY (booking_id)
-    --     REFERENCES national_rail_booking(booking_id),
+    FOREIGN KEY (booking_id)
+         REFERENCES national_rail_booking(booking_id),
 
     FOREIGN KEY (origin_station_id)
         REFERENCES stations(station_id)
