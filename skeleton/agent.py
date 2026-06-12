@@ -895,13 +895,18 @@ JSON:"""
     # 3. Route / directions / path — also overrides wrong-tool selections
     _route_triggers = {"fastest route", "quickest route", "shortest route", "cheapest route",
                        "best route", "how to get", "directions from", "route from", "route to",
-                       "get from", "travel from", "way from", "path from"}
+                       "get from", "travel from", "way from", "path from", "most convenient", "least transfers", "fewest transfers"}
     _is_route = (
         any(kw in _lower for kw in _route_triggers) or
         (_two_stations and "route" in _lower)
     )
     if _is_route and _two_stations and not _is_rail_fare and not _tool_selected("find_route", "origin_id", "destination_id"):
-        _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]) else "time"
+        if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]):
+            _opt = "cost"
+        elif any(kw in _lower for kw in ["convenient", "least transfer", "fewer transfer", "fewest transfer"]):
+            _opt = "transfers"
+        else:
+            _opt = "time"
         _fallback("find_route",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
