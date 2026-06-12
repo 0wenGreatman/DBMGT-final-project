@@ -1174,7 +1174,9 @@ def execute_booking(
             "ticket_type": ticket_type,
             "fare_class": fare_class,
             "seat_id": seat_id,
+            "seat_reservation_status": "confirmed",
             "payment_id": payment_id,
+            "payment_status": "paid",
         })
         return True, _row_to_dict(result)
 
