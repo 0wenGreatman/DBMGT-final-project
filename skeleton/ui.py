@@ -22,6 +22,7 @@ from databases.relational.queries import (
     get_user_secret_question,
     verify_secret_answer,
     update_password,
+    delete_user_account,
 )
 
 SECRET_QUESTIONS = [
@@ -320,6 +321,38 @@ def save_profile(current_user: str, phone: str, date_of_birth: str, original_pro
     )
 
 
+def do_delete_account(current_user: str, confirm: bool):
+    if not current_user:
+        return (gr.update(value="You are not logged in.", visible=True),) + tuple(gr.update() for _ in range(16))
+
+    if not confirm:
+        return (gr.update(value="Please check the box to confirm deletion.", visible=True),) + tuple(gr.update() for _ in range(16))
+
+    ok = delete_user_account(current_user)
+    if not ok:
+        return (gr.update(value="Failed to delete account. Please try again.", visible=True),) + tuple(gr.update() for _ in range(16))
+
+    return (
+        gr.update(value="Account deleted successfully.", visible=True),
+        None,
+        gr.update(visible=True),
+        gr.update(visible=True),
+        gr.update(value="", visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value="", visible=False),
+        None,
+        gr.update(value="", visible=False),
+        gr.update(value=False),
+    )
+
+
 def forgot_find_question(email: str):
     """Step 1 — look up the secret question for the given email."""
     if not email.strip():
@@ -464,6 +497,12 @@ with gr.Blocks(title="TransitFlow") as demo:
         with gr.Row():
             profile_save_btn   = gr.Button("Save profile", variant="primary", interactive=False)
             profile_cancel_btn = gr.Button("Cancel", size="sm")
+        
+        gr.Markdown("---")
+        gr.Markdown("#### Danger Zone")
+        profile_delete_confirm_chk = gr.Checkbox(label="I confirm I want to permanently delete my account.")
+        profile_delete_btn = gr.Button("Delete Account", variant="stop", interactive=False)
+        profile_delete_msg = gr.Markdown("", visible=False)
 
     # ── Main chat area ────────────────────────────────────────────────
     with gr.Row():
@@ -620,6 +659,37 @@ with gr.Blocks(title="TransitFlow") as demo:
     profile_cancel_btn.click(
         fn=hide_all_panels,
         outputs=[login_panel, register_panel, forgot_panel, profile_panel],
+    )
+
+    # Delete Account
+    profile_delete_confirm_chk.change(
+        fn=lambda c: gr.update(interactive=c),
+        inputs=[profile_delete_confirm_chk],
+        outputs=[profile_delete_btn]
+    )
+
+    profile_delete_btn.click(
+        fn=do_delete_account,
+        inputs=[current_user_state, profile_delete_confirm_chk],
+        outputs=[
+            profile_delete_msg,
+            current_user_state,
+            login_btn,
+            register_btn,
+            user_info_display,
+            logout_btn,
+            edit_profile_btn,
+            login_panel,
+            register_panel,
+            forgot_panel,
+            profile_panel,
+            profile_phone_in,
+            profile_dob_in,
+            profile_msg,
+            original_profile_state,
+            login_error_msg,
+            profile_delete_confirm_chk,
+        ],
     )
 
     # Logout
