@@ -572,11 +572,14 @@ def query_least_transfers_route(
     # Calculate the number of interchanges (relationships with type 'INTERCHANGE').
     # Then calculate total travel time to act as a secondary sorting metric.
     query = """
-        MATCH path = (start {station_id: $origin_id})-[:METRO_LINK|RAIL_LINK|INTERCHANGE*1..15]-(end {station_id: $destination_id})
-        WITH nodes(path) AS stations,
-             relationships(path) AS links,
-             size([r IN relationships(path) WHERE type(r) = 'INTERCHANGE']) AS interchange_count
-        WITH stations, links, interchange_count,
+        MATCH (start {station_id: $origin_id}), (end {station_id: $destination_id})
+        MATCH path = shortestPath((start)-[:METRO_LINK|RAIL_LINK|INTERCHANGE*1..15]->(end))
+        WITH path,
+             [r IN relationships(path) WHERE type(r) = 'INTERCHANGE'] AS interchanges,
+             relationships(path) AS links
+        WITH nodes(path) AS stations, 
+             links, 
+             size(interchanges) AS interchange_count,
              reduce(time = 0.0, r IN links | time + coalesce(r.travel_time_min, 5.0)) AS total_time_min
         ORDER BY interchange_count ASC, total_time_min ASC
         LIMIT 1
