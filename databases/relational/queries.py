@@ -1394,6 +1394,64 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
 
+def delete_user_account(email: str) -> bool:
+    """
+    Mark a user as deleted and anonymize their credentials and profile data immediately.
+    """
+    conn = None
+    try:
+        conn = psycopg2.connect(PG_DSN)
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM user_profiles WHERE email = %s AND deleted_at IS NULL",
+                (email,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            
+            profile_id = row[0]
+            
+            cur.execute(
+                """
+                UPDATE user_profiles
+                SET user_id = CONCAT('deleted_', id::text),
+                    email = CONCAT('deleted_', id::text, '@example.com'),
+                    first_name = 'Deleted',
+                    surname = 'User',
+                    phone = '0000000000',
+                    date_of_birth = '1900-01-01',
+                    is_active = FALSE,
+                    deleted_at = NOW()
+                WHERE id = %s
+                """,
+                (profile_id,)
+            )
+            
+            cur.execute(
+                """
+                UPDATE user_credentials
+                SET password_hash = CONCAT('DELETED_', gen_random_uuid()::text),
+                    secret_answer_hash = CONCAT('DELETED_', gen_random_uuid()::text),
+                    password_updated_at = NOW()
+                WHERE user_profile_id = %s
+                """,
+                (profile_id,)
+            )
+            
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        if conn is not None:
+            conn.rollback()
+        print(f"Error deleting user account: {e}")
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
 def register_user(
     email: str,
     first_name: str,
