@@ -661,7 +661,7 @@ with gr.Blocks(title="TransitFlow") as demo:
         outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
 
-    # Delete Account
+    # -- TASK 6 EXTENSION: Delete Account
     profile_delete_confirm_chk.change(
         fn=lambda c: gr.update(interactive=c),
         inputs=[profile_delete_confirm_chk],

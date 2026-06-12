@@ -1394,6 +1394,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
 
+# -- TASK 6 EXTENSION: Add the function of user deletion
 def delete_user_account(email: str) -> bool:
     """
     Mark a user as deleted and anonymize their credentials and profile data immediately.
