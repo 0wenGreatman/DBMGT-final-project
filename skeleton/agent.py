@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from skeleton.llm_provider import llm
@@ -566,12 +566,61 @@ def _summarise_result(tool_name: str, result_json: str) -> str:
     return result_json
 
 
+def _extract_travel_date(text: str) -> Optional[str]:
+    """Extract an ISO travel date from common user date formats."""
+    iso_match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', text)
+    if iso_match:
+        return iso_match.group(0)
+
+    month_match = re.search(
+        r'\b('
+        r'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
+        r'jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
+        r')\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})\b',
+        text,
+        re.IGNORECASE,
+    )
+    if not month_match:
+        return None
+
+    try:
+        parsed = datetime.strptime(
+            " ".join(month_match.groups()),
+            "%B %d %Y",
+        )
+    except ValueError:
+        parsed = datetime.strptime(
+            " ".join(month_match.groups()),
+            "%b %d %Y",
+        )
+    return parsed.date().isoformat()
+
+
 def _direct_answer_from_tool_results(user_message: str, tool_results: list[dict]) -> Optional[str]:
     """Return deterministic answers for numeric results that the LLM should not recalculate."""
     if len(tool_results) != 1:
         return None
 
     result = tool_results[0]
+    if result.get("tool") == "make_booking":
+        try:
+            data = json.loads(result["result"])
+        except (KeyError, json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict) or "error" in data:
+            return None
+
+        return (
+            "Booking confirmed.\n\n"
+            f"booking_id: {data.get('booking_id')}\n"
+            f"status: {data.get('status')}\n"
+            f"departure_time: {data.get('departure_time')}\n"
+            f"seat_id: {data.get('seat_id')}\n"
+            f"payment_id: {data.get('payment_id')}\n"
+            f"seat reservation status: {data.get('seat_reservation_status', 'confirmed')}\n"
+            f"payment status: {data.get('payment_status', 'paid')}"
+        )
+
     if result.get("tool") != "get_national_rail_fare":
         return None
 
@@ -760,6 +809,7 @@ JSON:"""
     _two_stations = len(_station_ids) >= 2
     _schedule_ids = re.findall(r'\bNR_SCH\d{2}\b', _augmented_message, re.IGNORECASE)
     _date_match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _augmented_message)
+    _travel_date = _extract_travel_date(_augmented_message)
     _time_match = re.search(r'\b(?:[01]\d|2[0-3]):[0-5]\d\b', _augmented_message)
     _fare_class_match = re.search(r'\b(standard|first)\b', _lower)    
     invalid_tool_calls = []
@@ -823,6 +873,7 @@ JSON:"""
     )
     _context_schedule = re.search(r'\bNR_SCH\d{2}\b', _booking_context, re.IGNORECASE)
     _context_date = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _booking_context)
+    _context_travel_date = _extract_travel_date(_booking_context)
     _context_time = re.search(r'\b(?:[01]\d|2[0-3]):[0-5]\d\b', _booking_context)
     _context_fare = re.search(r'\b(standard|first)\b', _booking_context_lower)
     _context_seat = re.search(r'\b(any|[A-Z]\d{2})\b', _booking_context, re.IGNORECASE)
@@ -838,33 +889,59 @@ JSON:"""
     if (
         current_user_email
         and _booking_confirmed
-        and _context_schedule
         and len(_context_stations) >= 2
-        and _context_date
+        and _context_travel_date
         and _context_fare
         and _context_seat
     ):
-        _fallback(
+        _booking_schedule_id = _context_schedule.group(0).upper() if _context_schedule else None
+        if not _booking_schedule_id:
+            try:
+                _schedule_options = query_national_rail_availability(
+                    origin_id=_context_stations[0].upper(),
+                    destination_id=_context_stations[1].upper(),
+                    travel_date=_context_travel_date,
+                )
+                if _schedule_options:
+                    _booking_schedule_id = _schedule_options[0]["schedule_id"]
+            except Exception:
+                _booking_schedule_id = None
+
+        if _booking_schedule_id:
+            _fallback(
+                "make_booking",
+                {
+                    "schedule_id": _booking_schedule_id,
+                    "origin_station_id": _context_stations[0].upper(),
+                    "destination_station_id": _context_stations[1].upper(),
+                    "travel_date": _context_travel_date,
+                    "departure_time": _context_time.group(0) if _context_time else "any",
+                    "fare_class": _context_fare.group(1),
+                    "seat_id": _context_seat.group(1).upper(),
+                    "ticket_type": "return" if "return" in _booking_context_lower else "single",
+                },
+                "complete confirmed booking request",
+            )
+    elif (
+        _booking_request
+        and _two_stations
+        and not _tool_selected(
             "make_booking",
-            {
-                "schedule_id": _context_schedule.group(0).upper(),
-                "origin_station_id": _context_stations[0].upper(),
-                "destination_station_id": _context_stations[1].upper(),
-                "travel_date": _context_date.group(0),
-                "departure_time": _context_time.group(0) if _context_time else "any",
-                "fare_class": _context_fare.group(1),
-                "seat_id": _context_seat.group(1).upper(),
-                "ticket_type": "return" if "return" in _booking_context_lower else "single",
-            },
-            "complete confirmed booking request",
+            "schedule_id",
+            "origin_station_id",
+            "destination_station_id",
+            "travel_date",
+            "departure_time",
+            "fare_class",
+            "seat_id",
         )
-    elif _booking_request and _two_stations:
+    ):
         _params = {
             "origin_id": _station_ids[0].upper(),
             "destination_id": _station_ids[1].upper(),
         }
-        if _date_match:
-            _params["travel_date"] = _date_match.group(0)
+        if _travel_date:
+            _params["travel_date"] = _travel_date
         _fallback(
             "check_national_rail_availability",
             _params,
@@ -918,8 +995,8 @@ JSON:"""
         if any(kw in _lower for kw in _avail_triggers):
             o, d = _station_ids[0].upper(), _station_ids[1].upper()
             _params = {"origin_id": o, "destination_id": d}
-            if _date_match:
-                _params["travel_date"] = _date_match.group(0)
+            if _travel_date:
+                _params["travel_date"] = _travel_date
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
 
@@ -1009,7 +1086,7 @@ JSON:"""
             {"role": "assistant", "content": direct_answer},
         ]
         if debug:
-            debug_info.append("**Direct formatter:** national rail fare")
+            debug_info.append(f"**Direct formatter:** {tool_results[0]['tool']}")
             return direct_answer, updated_history, "\n\n".join(debug_info)
         return direct_answer, updated_history
 
