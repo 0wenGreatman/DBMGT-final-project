@@ -54,6 +54,7 @@ from databases.graph.queries import (
     query_alternative_routes,
     query_interchange_path,
     query_delay_ripple,
+    query_least_transfers_route,
 )
 
 
@@ -244,15 +245,15 @@ TOOLS = [
         "name": "find_route",
         "description": (
             "Find the best route or path between two stations. Use for ANY question about "
-            "directions, how to get from A to B, fastest route, quickest route, or shortest path. "
+            "directions, how to get from A to B, fastest route, quickest route, shortest path, or least transfers (most convenient). "
             "Works for metro-only, rail-only, or cross-network journeys. "
-            "Use optimise_by='time' for fastest/quickest, 'cost' for cheapest."
+            "Use optimise_by='time' for fastest/quickest, 'cost' for cheapest, or 'transfers' for most convenient/fewest transfers."
         ),
         "parameters": {
             "origin_id":      {"type": "string", "description": "Station ID e.g. MS01 or NR01"},
             "destination_id": {"type": "string", "description": "Station ID e.g. MS09 or NR05"},
             "network":        {"type": "string", "description": "metro, rail, or auto (default auto — inferred from IDs)"},
-            "optimise_by":    {"type": "string", "description": "time (fastest, default) or cost (cheapest)"},
+            "optimise_by":    {"type": "string", "description": "time (fastest, default), cost (cheapest), or transfers (most convenient)"},
         },
         "required": ["origin_id", "destination_id"],
     },
@@ -477,6 +478,11 @@ def _execute_tool(
                     origin_id=origin_id,
                     destination_id=destination_id,
                     network=network,
+                )
+            elif optimise_by == "transfers":
+                result = query_least_transfers_route(
+                    origin_id=origin_id,
+                    destination_id=destination_id,
                 )
             else:  # optimise_by == "time"
                 if is_cross:
