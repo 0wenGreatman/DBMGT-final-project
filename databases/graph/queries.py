@@ -548,3 +548,93 @@ def query_station_connections(station_id: str) -> list[dict]:
         # Catch and log any exceptions (e.g., database connection issues) to avoid unhandled crashes
         print(f"[Error] query_station_connections failed for station '{station_id}': {e}")
         return []
+
+
+# ── LEAST TRANSFERS ROUTE (Most Convenient) ──────────────────────────────────
+
+def query_least_transfers_route(
+    origin_id: str,
+    destination_id: str,
+) -> dict:
+    """
+    Find the most convenient route between two stations by minimizing the number of transfers.
+    Transfers are explicitly identified by the 'INTERCHANGE' relationship type.
+    Ties (paths with the same number of transfers) are broken by total travel time.
+
+    Args:
+        origin_id:       e.g. "MS01" or "NR01"
+        destination_id:  e.g. "MS09" or "NR05"
+
+    Returns:
+        dict with found, origin_id, destination_id, interchange_count, total_time_min, path, legs
+    """
+    # MATCH paths up to 15 hops.
+    # Calculate the number of interchanges (relationships with type 'INTERCHANGE').
+    # Then calculate total travel time to act as a secondary sorting metric.
+    query = """
+        MATCH path = (start {station_id: $origin_id})-[:METRO_LINK|RAIL_LINK|INTERCHANGE*1..15]-(end {station_id: $destination_id})
+        WITH nodes(path) AS stations,
+             relationships(path) AS links,
+             size([r IN relationships(path) WHERE type(r) = 'INTERCHANGE']) AS interchange_count
+        WITH stations, links, interchange_count,
+             reduce(time = 0.0, r IN links | time + coalesce(r.travel_time_min, 5.0)) AS total_time_min
+        ORDER BY interchange_count ASC, total_time_min ASC
+        LIMIT 1
+        RETURN stations, links, interchange_count, total_time_min
+    """
+    
+    try:
+        with _driver() as driver:
+            with driver.session() as session:
+                result = session.run(query, origin_id=origin_id, destination_id=destination_id)
+                record = result.single()
+                
+                if not record:
+                    print(f"[Info] query_least_transfers_route: No route found from '{origin_id}' to '{destination_id}'.")
+                    return {
+                        "found": False,
+                        "origin_id": origin_id,
+                        "destination_id": destination_id,
+                        "interchange_count": 0,
+                        "total_time_min": 0,
+                        "path": [],
+                        "legs": []
+                    }
+                
+                path_nodes = []
+                for node in record["stations"]:
+                    path_nodes.append({
+                        "station_id": node.get("station_id"),
+                        "name": node.get("station_name"),
+                        "lines": node.get("lines")
+                    })
+                
+                legs = []
+                for rel in record["links"]:
+                    legs.append({
+                        "line": rel.get("line_id", "Interchange"),
+                        "travel_time_min": rel.get("travel_time_min", 5.0),
+                        "type": rel.type
+                    })
+                    
+                return {
+                    "found": True,
+                    "origin_id": origin_id,
+                    "destination_id": destination_id,
+                    "interchange_count": record["interchange_count"],
+                    "total_time_min": record["total_time_min"],
+                    "path": path_nodes,
+                    "legs": legs
+                }
+    except Exception as e:
+        print(f"[Error] query_least_transfers_route failed for {origin_id} -> {destination_id}: {e}")
+        return {
+            "found": False,
+            "origin_id": origin_id,
+            "destination_id": destination_id,
+            "interchange_count": 0,
+            "total_time_min": 0,
+            "path": [],
+            "legs": []
+        }
+

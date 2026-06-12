@@ -40,6 +40,10 @@ def seed():
         session.run("MATCH (n) DETACH DELETE n")
         print("  Cleared existing graph data")
 
+        print("  Creating constraints...")
+        session.run("CREATE CONSTRAINT metro_station_id IF NOT EXISTS FOR (n:MetroStation) REQUIRE n.station_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT national_rail_station_id IF NOT EXISTS FOR (n:NationalRailStation) REQUIRE n.station_id IS UNIQUE")
+
         # TODO: Design your node labels and create metro station nodes.
         # Each station has: station_id, name, lines, and interchange info.
         # See metro_stations.json for the full data structure.
