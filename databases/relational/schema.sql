@@ -2,6 +2,9 @@
 --  TransitFlow PostgreSQL Schema
 --  Seed data is loaded separately by: python skeleton/seed_postgres.py
 --
+--  # TASK 6 EXTENSION: The user_profiles table adds data-integrity
+--  constraints that protect profile data edited through the UI extension.
+--
 --  TWO ROLES:
 --    1. Relational  → dual-network transit data you design below
 --    2. Vector      → policy documents for RAG (provided — do not modify)
@@ -43,15 +46,18 @@ CREATE TABLE user_profiles (
     first_name VARCHAR(50) NOT NULL,                -- User's first name.
     surname VARCHAR(50) NOT NULL,                   -- User's surname.
     email VARCHAR(255) UNIQUE NOT NULL,             -- Potential login identification.
-    phone VARCHAR(50) NOT NULL,                     
-    date_of_birth DATE NOT NULL,                    
+    phone VARCHAR(50) NOT NULL,
+    date_of_birth DATE NOT NULL,
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Records the exact time the account was created.
     is_active BOOLEAN NOT NULL DEFAULT TRUE,          -- Indicates whether the account is active and permitted to access the system.
     deleted_at TIMESTAMPTZ,                           -- Acts as a soft-deletion marker to maintain referential integrity.
     
     -- Data Integrity Constraints
+    -- TASK 6 EXTENSION: Keep account lookup data reliable by rejecting invalid email formats at the database layer.
     CONSTRAINT chk_email_format CHECK (email ~* '^[A-Za-z0-9._+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]+$'),
+    -- TASK 6 EXTENSION: Keep UI profile updates consistent with valid phone input before accepting writes.
     CONSTRAINT chk_phone_format CHECK (phone ~ '^[0-9\+\-\(\)\s]{7,20}$'),
+    -- TASK 6 EXTENSION: Prevent impossible profile data such as future dates of birth.
     CONSTRAINT chk_dob_past CHECK (date_of_birth <= CURRENT_DATE)
 );
 

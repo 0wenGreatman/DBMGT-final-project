@@ -18,6 +18,9 @@ Functions prefixed with `execute_` are write operations (booking/cancellation).
 
 The vector functions (query_policy_vector_search, store_policy_document)
 are already implemented — do not modify them.
+
+# TASK 6 EXTENSION: Adds database-backed profile update support for editing
+# user_profiles.phone and user_profiles.date_of_birth from the UI.
 """
 
 from __future__ import annotations
@@ -662,6 +665,8 @@ def update_user_profile(
     new_phone = (phone or "").strip()
     raw_dob = (date_of_birth or "").strip()
 
+    # Validate in Python before touching PostgreSQL so the UI can show a clear
+    # message instead of exposing a raw CHECK-constraint or date parsing error.
     if not email:
         return False, "No logged-in user was provided."
 
@@ -680,6 +685,8 @@ def update_user_profile(
     try:
         conn = psycopg2.connect(PG_DSN)
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Lock the user's profile row for the duration of the transaction so
+            # concurrent profile saves cannot overwrite each other silently.
             cur.execute(
                 """
                 SELECT user_id, first_name, surname, email, phone, date_of_birth, is_active
@@ -704,6 +711,8 @@ def update_user_profile(
             )
 
             if not changed:
+                # Nothing changed, so avoid writing an UPDATE. Rolling back also
+                # releases the row lock immediately without changing data.
                 conn.rollback()
                 return True, {
                     "changed": False,
@@ -717,6 +726,8 @@ def update_user_profile(
                     "is_active": current["is_active"],
                 }
 
+            # Update only the fields exposed by the Edit Profile UI. The email
+            # condition keeps the operation scoped to the currently logged-in user.
             cur.execute(
                 """
                 UPDATE user_profiles

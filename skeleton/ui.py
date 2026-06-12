@@ -5,6 +5,9 @@ Run with:  python skeleton/ui.py
 Then open: http://localhost:7860
 
 Students: You do NOT need to change this file.
+
+# TASK 6 EXTENSION: Adds an authenticated Edit Profile panel that lets users
+# load and update their phone number and date of birth from the UI.
 """
 
 import sys
