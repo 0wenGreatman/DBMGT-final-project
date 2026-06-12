@@ -17,6 +17,8 @@ from skeleton.config import GEMINI_CHAT_MODEL, OLLAMA_CHAT_MODEL
 from databases.relational.queries import (
     login_user,
     register_user,
+    query_user_profile,
+    update_user_profile,
     get_user_secret_question,
     verify_secret_answer,
     update_password,
@@ -107,8 +109,10 @@ def do_login(email: str, password: str):
         return (
             gr.update(value="Please enter your email and password.", visible=True),
             None,
-            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
+            gr.update(visible=False),
+            None,
         )
 
     user = login_user(email.strip(), password)
@@ -116,8 +120,10 @@ def do_login(email: str, password: str):
         return (
             gr.update(value="Incorrect email or password.", visible=True),
             None,
-            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
+            gr.update(visible=False),
+            None,
         )
 
     display_name = f"{user['first_name']} {user['surname']}"
@@ -128,7 +134,10 @@ def do_login(email: str, password: str):
         gr.update(visible=False),
         gr.update(value=f"**Welcome, {display_name}**", visible=True),
         gr.update(visible=True),
+        gr.update(visible=True),
         gr.update(visible=False),
+        gr.update(visible=False),
+        None,
     )
 
 
@@ -142,6 +151,12 @@ def do_logout():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value="", visible=False),
+        None,
     )
 
 
@@ -154,8 +169,10 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         return (
             gr.update(value="All fields are required.", visible=True),
             None,
-            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
+            gr.update(visible=False),
+            None,
         )
 
     try:
@@ -166,8 +183,10 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         return (
             gr.update(value="Please enter a valid year of birth (e.g. 1990).", visible=True),
             None,
-            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
+            gr.update(visible=False),
+            None,
         )
 
     ok, err = register_user(
@@ -178,8 +197,10 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         return (
             gr.update(value=err, visible=True),
             None,
-            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
+            gr.update(visible=False),
+            None,
         )
 
     display_name = f"{first_name.strip()} {surname.strip()}"
@@ -190,7 +211,108 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         gr.update(visible=False),
         gr.update(value=f"**Welcome, {display_name}**", visible=True),
         gr.update(visible=True),
+        gr.update(visible=True),
         gr.update(visible=False),
+        gr.update(visible=False),
+        None,
+    )
+
+
+def open_profile_panel(current_user: str):
+    """Load the logged-in user's editable profile fields."""
+    if not current_user:
+        return (
+            gr.update(visible=False),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value="Please log in before editing your profile.", visible=True),
+            gr.update(interactive=False),
+            None,
+        )
+
+    profile = query_user_profile(current_user)
+    if not profile:
+        return (
+            gr.update(visible=True),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value="Profile not found. Please log out and log in again.", visible=True),
+            gr.update(interactive=False),
+            None,
+        )
+
+    original_profile = {
+        "phone": profile["phone"],
+        "date_of_birth": profile["date_of_birth"],
+    }
+    return (
+        gr.update(visible=True),
+        gr.update(value=profile["phone"]),
+        gr.update(value=profile["date_of_birth"]),
+        gr.update(value="", visible=False),
+        gr.update(interactive=False),
+        original_profile,
+    )
+
+
+def on_profile_change(phone: str, date_of_birth: str, original_profile: dict):
+    if not original_profile:
+        return gr.update(interactive=False), gr.update(value="", visible=False)
+
+    changed = (
+        str(phone or "").strip() != original_profile.get("phone", "")
+        or str(date_of_birth or "").strip() != original_profile.get("date_of_birth", "")
+    )
+    return gr.update(interactive=changed), gr.update(value="", visible=False)
+
+
+def save_profile(current_user: str, phone: str, date_of_birth: str, original_profile: dict):
+    if not current_user:
+        return (
+            gr.update(value="Please log in before editing your profile.", visible=True),
+            gr.update(interactive=False),
+            original_profile,
+            gr.update(),
+            gr.update(),
+        )
+
+    changed = (
+        original_profile
+        and (
+            str(phone or "").strip() != original_profile.get("phone", "")
+            or str(date_of_birth or "").strip() != original_profile.get("date_of_birth", "")
+        )
+    )
+    if not changed:
+        return (
+            gr.update(value="No changes to save.", visible=True),
+            gr.update(interactive=False),
+            original_profile,
+            gr.update(),
+            gr.update(),
+        )
+
+    ok, result = update_user_profile(current_user, phone, date_of_birth)
+    if not ok:
+        return (
+            gr.update(value=str(result), visible=True),
+            gr.update(interactive=True),
+            original_profile,
+            gr.update(),
+            gr.update(),
+        )
+
+    new_profile = {
+        "phone": result["phone"],
+        "date_of_birth": result["date_of_birth"],
+    }
+    message = "Profile updated successfully." if result.get("changed") else "No changes to save."
+    return (
+        gr.update(value=message, visible=True),
+        gr.update(interactive=False),
+        new_profile,
+        gr.update(value=result["phone"]),
+        gr.update(value=result["date_of_birth"]),
     )
 
 
@@ -241,16 +363,16 @@ def forgot_reset_password(email: str, answer: str, new_password: str):
 # ── Panel visibility toggles ──────────────────────────────────────────────────
 
 def show_login_panel():
-    return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+    return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 def show_register_panel():
-    return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+    return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
 
 def show_forgot_panel():
-    return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+    return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
 
 def hide_all_panels():
-    return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+    return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 
 # ── Example queries ────────────────────────────────────────────────────────────
@@ -272,6 +394,7 @@ with gr.Blocks(title="TransitFlow") as demo:
     # ── Hidden state ──────────────────────────────────────────────────
     agent_history_state = gr.State([])
     current_user_state  = gr.State(None)   # None = guest, email str = logged in
+    original_profile_state = gr.State(None)
 
     # ── Header: title + auth buttons ─────────────────────────────────
     with gr.Row(equal_height=True):
@@ -284,7 +407,9 @@ with gr.Blocks(title="TransitFlow") as demo:
                 login_btn    = gr.Button("👤 Login",    size="sm", variant="secondary")
                 register_btn = gr.Button("📝 Register", size="sm", variant="secondary")
             user_info_display = gr.Markdown("", visible=False)
-            logout_btn = gr.Button("Logout", size="sm", variant="stop", visible=False)
+            with gr.Row():
+                edit_profile_btn = gr.Button("Edit Profile", size="sm", variant="secondary", visible=False)
+                logout_btn = gr.Button("Logout", size="sm", variant="stop", visible=False)
 
     # ── Login panel (hidden by default) ──────────────────────────────
     with gr.Column(visible=False) as login_panel:
@@ -324,6 +449,17 @@ with gr.Blocks(title="TransitFlow") as demo:
         forgot_reset_btn         = gr.Button("Reset password", variant="primary", visible=False)
         forgot_msg               = gr.Markdown("")
         forgot_back_btn          = gr.Button("Back to login", size="sm")
+
+    # ── Profile panel (hidden by default) ─────────────────────────────
+    with gr.Column(visible=False) as profile_panel:
+        gr.Markdown("### Profile")
+        with gr.Row():
+            profile_phone_in = gr.Textbox(label="Phone", placeholder="e.g. 07912340101")
+            profile_dob_in   = gr.Textbox(label="Date of birth", placeholder="YYYY-MM-DD")
+        profile_msg = gr.Markdown("", visible=False)
+        with gr.Row():
+            profile_save_btn   = gr.Button("Save profile", variant="primary", interactive=False)
+            profile_cancel_btn = gr.Button("Cancel", size="sm")
 
     # ── Main chat area ────────────────────────────────────────────────
     with gr.Row():
@@ -400,27 +536,27 @@ with gr.Blocks(title="TransitFlow") as demo:
     # Panel toggle buttons
     login_btn.click(
         fn=show_login_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
     register_btn.click(
         fn=show_register_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
     login_cancel_btn.click(
         fn=hide_all_panels,
-        outputs=[login_panel, register_panel, forgot_panel],
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
     reg_cancel_btn.click(
         fn=hide_all_panels,
-        outputs=[login_panel, register_panel, forgot_panel],
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
     forgot_link_btn.click(
         fn=show_forgot_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
     forgot_back_btn.click(
         fn=show_login_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
 
     # Login
@@ -434,8 +570,51 @@ with gr.Blocks(title="TransitFlow") as demo:
             register_btn,
             user_info_display,
             logout_btn,
+            edit_profile_btn,
             login_panel,
+            profile_panel,
+            original_profile_state,
         ],
+    )
+
+    # Profile
+    edit_profile_btn.click(
+        fn=open_profile_panel,
+        inputs=[current_user_state],
+        outputs=[
+            profile_panel,
+            profile_phone_in,
+            profile_dob_in,
+            profile_msg,
+            profile_save_btn,
+            original_profile_state,
+        ],
+    )
+
+    profile_phone_in.change(
+        fn=on_profile_change,
+        inputs=[profile_phone_in, profile_dob_in, original_profile_state],
+        outputs=[profile_save_btn, profile_msg],
+    )
+    profile_dob_in.change(
+        fn=on_profile_change,
+        inputs=[profile_phone_in, profile_dob_in, original_profile_state],
+        outputs=[profile_save_btn, profile_msg],
+    )
+    profile_save_btn.click(
+        fn=save_profile,
+        inputs=[current_user_state, profile_phone_in, profile_dob_in, original_profile_state],
+        outputs=[
+            profile_msg,
+            profile_save_btn,
+            original_profile_state,
+            profile_phone_in,
+            profile_dob_in,
+        ],
+    )
+    profile_cancel_btn.click(
+        fn=hide_all_panels,
+        outputs=[login_panel, register_panel, forgot_panel, profile_panel],
     )
 
     # Logout
@@ -447,9 +626,15 @@ with gr.Blocks(title="TransitFlow") as demo:
             register_btn,
             user_info_display,
             logout_btn,
+            edit_profile_btn,
             login_panel,
             register_panel,
             forgot_panel,
+            profile_panel,
+            profile_phone_in,
+            profile_dob_in,
+            profile_msg,
+            original_profile_state,
         ],
     )
 
@@ -467,7 +652,10 @@ with gr.Blocks(title="TransitFlow") as demo:
             register_btn,
             user_info_display,
             logout_btn,
+            edit_profile_btn,
             register_panel,
+            profile_panel,
+            original_profile_state,
         ],
     )
 

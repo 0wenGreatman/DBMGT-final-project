@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import string
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -649,6 +650,104 @@ def query_user_profile(user_email: str) -> Optional[dict]:
     except Exception as e:
         print(f"Error fetching user profile: {e}")
         return None
+
+
+def update_user_profile(
+    user_email: str,
+    phone: Optional[str] = None,
+    date_of_birth: Optional[str] = None,
+) -> tuple[bool, object]:
+    """Update editable profile fields and return the latest profile."""
+    email = (user_email or "").strip()
+    new_phone = (phone or "").strip()
+    raw_dob = (date_of_birth or "").strip()
+
+    if not email:
+        return False, "No logged-in user was provided."
+
+    if not re.fullmatch(r"[0-9\+\-\(\)\s]{7,20}", new_phone):
+        return False, "Phone must be 7-20 characters and may contain digits, spaces, +, -, or parentheses."
+
+    try:
+        parsed_dob = datetime.strptime(raw_dob, "%Y-%m-%d").date()
+    except ValueError:
+        return False, "Date of birth must use YYYY-MM-DD format."
+
+    if parsed_dob > date.today():
+        return False, "Date of birth cannot be in the future."
+
+    conn = None
+    try:
+        conn = psycopg2.connect(PG_DSN)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT user_id, first_name, surname, email, phone, date_of_birth, is_active
+                FROM user_profiles
+                WHERE email = %s AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+                (email,),
+            )
+            current = cur.fetchone()
+            if not current:
+                conn.rollback()
+                return False, "User profile not found."
+
+            current_dob = current["date_of_birth"]
+            if isinstance(current_dob, datetime):
+                current_dob = current_dob.date()
+
+            changed = (
+                new_phone != current["phone"]
+                or parsed_dob != current_dob
+            )
+
+            if not changed:
+                conn.rollback()
+                return True, {
+                    "changed": False,
+                    "user_id": current["user_id"],
+                    "email": current["email"],
+                    "full_name": f"{current['first_name']} {current['surname']}",
+                    "first_name": current["first_name"],
+                    "surname": current["surname"],
+                    "phone": current["phone"],
+                    "date_of_birth": str(current["date_of_birth"]),
+                    "is_active": current["is_active"],
+                }
+
+            cur.execute(
+                """
+                UPDATE user_profiles
+                SET phone = %s,
+                    date_of_birth = %s
+                WHERE email = %s AND deleted_at IS NULL
+                RETURNING user_id, first_name, surname, email, phone, date_of_birth, is_active
+                """,
+                (new_phone, parsed_dob, email),
+            )
+            updated = cur.fetchone()
+            conn.commit()
+            return True, {
+                "changed": True,
+                "user_id": updated["user_id"],
+                "email": updated["email"],
+                "full_name": f"{updated['first_name']} {updated['surname']}",
+                "first_name": updated["first_name"],
+                "surname": updated["surname"],
+                "phone": updated["phone"],
+                "date_of_birth": str(updated["date_of_birth"]),
+                "is_active": updated["is_active"],
+            }
+    except Exception as e:
+        if conn is not None:
+            conn.rollback()
+        print(f"Error updating user profile: {e}")
+        return False, "Failed to update profile. Please check the values and try again."
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def query_user_bookings(user_email: str) -> dict:
