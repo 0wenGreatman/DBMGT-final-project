@@ -274,6 +274,7 @@ def save_profile(current_user: str, phone: str, date_of_birth: str, original_pro
             original_profile,
             gr.update(),
             gr.update(),
+            gr.update(),
         )
 
     changed = (
@@ -290,6 +291,7 @@ def save_profile(current_user: str, phone: str, date_of_birth: str, original_pro
             original_profile,
             gr.update(),
             gr.update(),
+            gr.update(),
         )
 
     ok, result = update_user_profile(current_user, phone, date_of_birth)
@@ -298,6 +300,7 @@ def save_profile(current_user: str, phone: str, date_of_birth: str, original_pro
             gr.update(value=str(result), visible=True),
             gr.update(interactive=True),
             original_profile,
+            gr.update(),
             gr.update(),
             gr.update(),
         )
@@ -313,6 +316,7 @@ def save_profile(current_user: str, phone: str, date_of_birth: str, original_pro
         new_profile,
         gr.update(value=result["phone"]),
         gr.update(value=result["date_of_birth"]),
+        gr.update(visible=False),
     )
 
 
@@ -610,6 +614,7 @@ with gr.Blocks(title="TransitFlow") as demo:
             original_profile_state,
             profile_phone_in,
             profile_dob_in,
+            profile_panel,
         ],
     )
     profile_cancel_btn.click(
